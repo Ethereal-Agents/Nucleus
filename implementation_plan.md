@@ -52,24 +52,39 @@ graph TB
 
 ## 1. Project Structure
 
-```
+```text
 Nuclues/
 ├── swarm_memory/
 │   ├── __init__.py
-│   ├── db.py                  # SQLite schema, migrations, connection management
-│   ├── models.py              # Pydantic data models (Fact, Run, SearchResult)
-│   ├── embeddings.py          # Embedding model wrapper (nomic-embed-text-v1.5)
-│   ├── writer.py              # FactWriter: ingest, embed, detect contradictions, store
-│   ├── reader.py              # FactReader: hybrid search (dense + BM25 via RRF)
-│   ├── supersession.py        # ContradictionDetector: LLM-based temporal supersession
-│   ├── server.py              # FastMCP server (exposes memory.write/search/invalidate)
-│   └── config.py              # Configuration constants
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── config.py          # Configuration constants
+│   │   └── models.py          # Pydantic data models (Fact, Run, SearchResult)
+│   ├── store/
+│   │   ├── __init__.py
+│   │   └── db.py              # SQLite schema, migrations, connection management
+│   ├── retrieval/
+│   │   ├── __init__.py
+│   │   ├── embeddings.py      # Embedding model wrapper (nomic-embed-text-v1.5)
+│   │   └── reader.py          # FactReader: hybrid search (dense + BM25 via RRF)
+│   ├── ingestion/
+│   │   ├── __init__.py
+│   │   ├── writer.py          # FactWriter: ingest, embed, detect contradictions, store
+│   │   └── supersession.py    # ContradictionDetector: LLM-based temporal supersession
+│   └── server/
+│       ├── __init__.py
+│       └── mcp.py             # FastMCP server (exposes memory tools)
 ├── tests/
-│   ├── test_db.py
-│   ├── test_writer.py
-│   ├── test_reader.py
-│   ├── test_supersession.py
-│   └── test_server.py
+│   ├── __init__.py
+│   ├── store/
+│   │   └── test_db.py
+│   ├── retrieval/
+│   │   └── test_reader.py
+│   ├── ingestion/
+│   │   ├── test_writer.py
+│   │   └── test_supersession.py
+│   └── server/
+│       └── test_mcp.py
 ├── pyproject.toml
 └── README.md
 ```
