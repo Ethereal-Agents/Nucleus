@@ -1,0 +1,19 @@
+[project]
+name = "swarm-memory"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=2.0",
+    "sqlite-vec>=0.1.6",
+    "sentence-transformers>=3.0",
+    "numpy>=1.26",
+    "pydantic>=2.0",
+    "anthropic>=0.40",
+    "uuid7>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
