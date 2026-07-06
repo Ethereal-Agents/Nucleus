@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # These prefixes were part of the model's training — omitting them degrades
 # retrieval accuracy. The model distinguishes "being found" from "looking for".
 PREFIX_DOCUMENT = "search_document: "  # used when embedding facts for storage
-PREFIX_QUERY = "search_query: "        # used when embedding a search query
+PREFIX_QUERY = "search_query: "  # used when embedding a search query
 
 
 class EmbeddingModel:

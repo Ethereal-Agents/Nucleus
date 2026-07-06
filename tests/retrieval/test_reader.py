@@ -44,6 +44,7 @@ from swarm_memory.store.db import get_initialized_db
 # Fixtures
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @pytest.fixture
 def in_memory_db() -> sqlite3.Connection:
     """
@@ -94,12 +95,48 @@ def db_with_facts(in_memory_db) -> tuple[sqlite3.Connection, dict]:
 
     facts_data = [
         # (id, content, fact_type, scope, content_hash)
-        ("fact-A", "auth.logout() does not invalidate server sessions by default. Pass invalidate=True.", "gotcha",       "test-repo/src/auth",    "hash-A"),
-        ("fact-B", "Session tokens are stored in Redis with a 24h TTL.",                                  "architecture", "test-repo/src/auth",    "hash-B"),
-        ("fact-C", "All DB calls must use the connection pool in src/db.py.",                             "convention",   "test-repo",             "hash-C"),
-        ("fact-D", "The auth module uses JWT for API authentication.",                                    "insight",      "test-repo/src/auth",    "hash-D"),
-        ("fact-E", "This fact is superseded and should never appear in current results.",                 "insight",      "test-repo",             "hash-E"),
-        ("fact-F", "FastAPI is the web framework used by this project.",                                  "dependency",   "test-repo",             "hash-F"),
+        (
+            "fact-A",
+            "auth.logout() does not invalidate server sessions by default. Pass invalidate=True.",
+            "gotcha",
+            "test-repo/src/auth",
+            "hash-A",
+        ),
+        (
+            "fact-B",
+            "Session tokens are stored in Redis with a 24h TTL.",
+            "architecture",
+            "test-repo/src/auth",
+            "hash-B",
+        ),
+        (
+            "fact-C",
+            "All DB calls must use the connection pool in src/db.py.",
+            "convention",
+            "test-repo",
+            "hash-C",
+        ),
+        (
+            "fact-D",
+            "The auth module uses JWT for API authentication.",
+            "insight",
+            "test-repo/src/auth",
+            "hash-D",
+        ),
+        (
+            "fact-E",
+            "This fact is superseded and should never appear in current results.",
+            "insight",
+            "test-repo",
+            "hash-E",
+        ),
+        (
+            "fact-F",
+            "FastAPI is the web framework used by this project.",
+            "dependency",
+            "test-repo",
+            "hash-F",
+        ),
     ]
 
     for fid, content, ftype, scope, chash in facts_data:
@@ -129,6 +166,7 @@ def db_with_facts(in_memory_db) -> tuple[sqlite3.Connection, dict]:
 # Tests: EmbeddingModel
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestEmbeddingModel:
     def test_lazy_loading_not_loaded_at_init(self):
         """Model should NOT be loaded at construction time."""
@@ -145,14 +183,20 @@ class TestEmbeddingModel:
     def test_embed_uses_document_prefix_by_default(self, mock_embedder):
         """embed() should prepend PREFIX_DOCUMENT by default."""
         calls = []
-        mock_embedder._model.encode = lambda text, **kw: (calls.append(text), np.ones(768, dtype=np.float32))[1]
+        mock_embedder._model.encode = lambda text, **kw: (
+            calls.append(text),
+            np.ones(768, dtype=np.float32),
+        )[1]
         mock_embedder.embed("some content")
         assert calls[0].startswith(PREFIX_DOCUMENT)
 
     def test_embed_query_uses_query_prefix(self, mock_embedder):
         """embed_query() must use PREFIX_QUERY, not PREFIX_DOCUMENT."""
         calls = []
-        mock_embedder._model.encode = lambda text, **kw: (calls.append(text), np.ones(768, dtype=np.float32))[1]
+        mock_embedder._model.encode = lambda text, **kw: (
+            calls.append(text),
+            np.ones(768, dtype=np.float32),
+        )[1]
         mock_embedder.embed_query("search this")
         assert calls[0].startswith(PREFIX_QUERY)
         assert not calls[0].startswith(PREFIX_DOCUMENT)
@@ -206,6 +250,7 @@ class TestEmbeddingModel:
 # Tests: Pure helper functions
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestResolveScopeTiers:
     def test_single_segment(self):
         """A bare repo name has only one tier."""
@@ -220,9 +265,9 @@ class TestResolveScopeTiers:
         result = resolve_scope_tiers("repo/src/auth/sessions")
         assert result == [
             ("repo/src/auth/sessions", 0),
-            ("repo/src/auth",          1),
-            ("repo/src",               2),
-            ("repo",                   3),
+            ("repo/src/auth", 1),
+            ("repo/src", 2),
+            ("repo", 3),
         ]
 
     def test_tiers_ordered_specific_to_general(self):
@@ -236,7 +281,7 @@ class TestRecipRankFusion:
     def test_document_in_both_lists_ranks_highest(self):
         """A doc found in both lists should score higher than docs in only one."""
         dense = [("fact_A", 0.9), ("fact_C", 0.6)]
-        bm25  = [("fact_B", 10.), ("fact_A", 7.)]
+        bm25 = [("fact_B", 10.0), ("fact_A", 7.0)]
         fused = reciprocal_rank_fusion(dense, bm25)
         top_id = fused[0][0]
         assert top_id == "fact_A"
@@ -244,7 +289,7 @@ class TestRecipRankFusion:
     def test_output_sorted_descending(self):
         """Scores in fused output must be strictly non-increasing."""
         dense = [("A", 1.0), ("B", 0.8), ("C", 0.6)]
-        bm25  = [("C", 5.0), ("A", 4.0), ("D", 3.0)]
+        bm25 = [("C", 5.0), ("A", 4.0), ("D", 3.0)]
         fused = reciprocal_rank_fusion(dense, bm25)
         scores = [s for _, s in fused]
         assert scores == sorted(scores, reverse=True)
@@ -258,7 +303,7 @@ class TestRecipRankFusion:
     def test_weights_applied(self):
         """A list with weight 0 should contribute 0 to scores."""
         dense = [("A", 1.0)]
-        bm25  = [("B", 1.0)]
+        bm25 = [("B", 1.0)]
         # dense has 0 weight: only BM25 contributes
         fused = dict(reciprocal_rank_fusion(dense, bm25, weights=[0.0, 1.0]))
         assert fused.get("A", 0.0) == 0.0
@@ -318,8 +363,8 @@ class TestApplyGotchaPriority:
 
     def test_gotchas_are_first(self):
         results = [
-            self._make_result("A", FactType.INSIGHT,      0.9),
-            self._make_result("B", FactType.GOTCHA,       0.5),  # lower score but gotcha
+            self._make_result("A", FactType.INSIGHT, 0.9),
+            self._make_result("B", FactType.GOTCHA, 0.5),  # lower score but gotcha
             self._make_result("C", FactType.ARCHITECTURE, 0.8),
         ]
         ordered = apply_gotcha_priority(results)
@@ -328,8 +373,8 @@ class TestApplyGotchaPriority:
 
     def test_non_gotchas_preserve_order(self):
         results = [
-            self._make_result("A", FactType.INSIGHT,      0.9),
-            self._make_result("B", FactType.CONVENTION,   0.7),
+            self._make_result("A", FactType.INSIGHT, 0.9),
+            self._make_result("B", FactType.CONVENTION, 0.7),
         ]
         ordered = apply_gotcha_priority(results)
         # No gotchas → order unchanged
@@ -337,9 +382,9 @@ class TestApplyGotchaPriority:
 
     def test_multiple_gotchas_preserve_internal_order(self):
         results = [
-            self._make_result("G1", FactType.GOTCHA,  0.8),
-            self._make_result("A",  FactType.INSIGHT, 0.9),
-            self._make_result("G2", FactType.GOTCHA,  0.6),
+            self._make_result("G1", FactType.GOTCHA, 0.8),
+            self._make_result("A", FactType.INSIGHT, 0.9),
+            self._make_result("G2", FactType.GOTCHA, 0.6),
         ]
         ordered = apply_gotcha_priority(results)
         # Both gotchas come first, in their original order relative to each other
@@ -407,6 +452,7 @@ class TestFormatResultsForAgent:
 # Tests: Session deduplication
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestSessionDedup:
     def setup_method(self):
         """Clear global session state before each test."""
@@ -443,11 +489,15 @@ class TestSessionDedup:
         run_id = "test-run-dedup"
 
         # First search
-        first = reader.search_with_dedup("auth sessions", scope="test-repo", run_id=run_id, top_k=10)
+        first = reader.search_with_dedup(
+            "auth sessions", scope="test-repo", run_id=run_id, top_k=10
+        )
         first_ids = {r.fact.id for r in first}
 
         # Second search for same thing — should get 0 overlap (everything already seen)
-        second = reader.search_with_dedup("auth sessions", scope="test-repo", run_id=run_id, top_k=10)
+        second = reader.search_with_dedup(
+            "auth sessions", scope="test-repo", run_id=run_id, top_k=10
+        )
         second_ids = {r.fact.id for r in second}
 
         # No ID should appear in both first and second results
@@ -461,6 +511,7 @@ class TestSessionDedup:
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: FactReader — BM25 search (vec_available=False)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestFactReaderBM25:
     """Tests for FactReader using BM25-only mode (no sqlite-vec required)."""
@@ -525,6 +576,7 @@ class TestFactReaderBM25:
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: Timed utility
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestTimedUtility:
     def test_timed_does_not_suppress_exceptions(self):

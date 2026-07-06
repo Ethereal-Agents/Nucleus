@@ -82,7 +82,9 @@ def get_db(path: str | None = None) -> sqlite3.Connection:
     if path is None:
         path = DB_PATH
 
-    conn = sqlite3.connect(path, isolation_level=None) # Auto-commit mode for setup, we can use transactions manually
+    conn = sqlite3.connect(
+        path, isolation_level=None
+    )  # Auto-commit mode for setup, we can use transactions manually
     conn.row_factory = sqlite3.Row
 
     # Performance-critical PRAGMAs
@@ -95,6 +97,7 @@ def get_db(path: str | None = None) -> sqlite3.Connection:
     # Load sqlite-vec extension
     try:
         import sqlite_vec
+
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
@@ -112,8 +115,10 @@ def init_db(conn: sqlite3.Connection, vec_loaded: bool = False, embed_dim: int =
     if vec_loaded:
         conn.executescript(_VEC_SCHEMA.format(dim=embed_dim))
 
+
 def get_initialized_db(path: str | None = None) -> sqlite3.Connection:
     from swarm_memory.core.config import EMBED_DIM
+
     conn, vec_loaded = get_db(path)
     init_db(conn, vec_loaded, EMBED_DIM)
     return conn

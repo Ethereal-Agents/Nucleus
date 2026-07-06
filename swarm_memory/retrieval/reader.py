@@ -44,10 +44,39 @@ logger = logging.getLogger(__name__)
 
 _STOP_WORDS: frozenset[str] = frozenset(
     {
-        "what", "is", "the", "how", "do", "does", "a", "an", "to", "for",
-        "in", "of", "and", "or", "should", "i", "we", "it", "are", "be",
-        "with", "this", "that", "can", "right", "way", "when", "where",
-        "why", "which", "there", "was", "its",
+        "what",
+        "is",
+        "the",
+        "how",
+        "do",
+        "does",
+        "a",
+        "an",
+        "to",
+        "for",
+        "in",
+        "of",
+        "and",
+        "or",
+        "should",
+        "i",
+        "we",
+        "it",
+        "are",
+        "be",
+        "with",
+        "this",
+        "that",
+        "can",
+        "right",
+        "way",
+        "when",
+        "where",
+        "why",
+        "which",
+        "there",
+        "was",
+        "its",
     }
 )
 
@@ -62,6 +91,7 @@ _session_seen: dict[str, tuple[set[str], float]] = {}
 # ═══════════════════════════════════════════════════════════════════════════
 # Timing utility
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @contextmanager
 def timed(label: str) -> Generator[None, None, None]:
@@ -85,6 +115,7 @@ def timed(label: str) -> Generator[None, None, None]:
 # ═══════════════════════════════════════════════════════════════════════════
 # Pure helper functions (no DB access, fully unit-testable)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def resolve_scope_tiers(scope: str) -> list[tuple[str, int]]:
     """
@@ -183,11 +214,7 @@ def preprocess_for_fts5(query: str) -> str | None:
     clean = re.sub(r"[^\w\s]", " ", query.lower())
 
     # Keep only non-stop, non-trivial tokens (len > 2 avoids noise like "in", "at")
-    terms = [
-        word
-        for word in clean.split()
-        if word not in _STOP_WORDS and len(word) > 2
-    ]
+    terms = [word for word in clean.split() if word not in _STOP_WORDS and len(word) > 2]
 
     if not terms:
         return None  # signal to caller: skip BM25, use dense-only
@@ -262,6 +289,7 @@ def format_results_for_agent(results: list[SearchResult], scope: str) -> str:
 # Session deduplication (module-level, shared across all FactReader instances)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def _evict_stale_sessions() -> None:
     """
     Remove sessions that have been idle for longer than SESSION_TTL_SECONDS.
@@ -274,9 +302,7 @@ def _evict_stale_sessions() -> None:
     """
     cutoff = time.time() - config.SESSION_TTL_SECONDS
     stale_ids = [
-        run_id
-        for run_id, (_seen_ids, last_access) in _session_seen.items()
-        if last_access < cutoff
+        run_id for run_id, (_seen_ids, last_access) in _session_seen.items() if last_access < cutoff
     ]
     for run_id in stale_ids:
         del _session_seen[run_id]
@@ -301,6 +327,7 @@ def end_session(run_id: str) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 # FactReader — the main retrieval engine
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class FactReader:
     """
@@ -574,9 +601,7 @@ class FactReader:
         with timed("search.dense"):
             query_vec = self._embedder.embed_query(query)
             dense_results = (
-                self._dense_search(query_vec, scope_tiers, top_n=OVER_FETCH)
-                if scope_tiers
-                else []
+                self._dense_search(query_vec, scope_tiers, top_n=OVER_FETCH) if scope_tiers else []
             )
             # Without scope, fall back to global dense (no scope filter)
             if not scope_tiers and self._vec_available:
@@ -627,9 +652,7 @@ class FactReader:
         # BM25 weighted 0.8 (booster for technical term matches)
         with timed("search.rrf"):
             if dense_results and bm25_results:
-                fused = reciprocal_rank_fusion(
-                    dense_results, bm25_results, weights=[1.0, 0.8]
-                )
+                fused = reciprocal_rank_fusion(dense_results, bm25_results, weights=[1.0, 0.8])
             elif dense_results:
                 fused = [(fid, score) for fid, score in dense_results]
             elif bm25_results:
@@ -639,7 +662,7 @@ class FactReader:
 
         # Build a score lookup for decay calculation later
         rrf_scores = dict(fused)
-        candidate_ids = [fid for fid, _ in fused[: OVER_FETCH]]
+        candidate_ids = [fid for fid, _ in fused[:OVER_FETCH]]
 
         # Step 7: Temporal filter — hydrate facts and validate temporal window
         with timed("search.temporal_filter"):
