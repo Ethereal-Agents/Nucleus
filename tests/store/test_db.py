@@ -31,7 +31,7 @@ def test_insert_and_retrieve_run(db_conn):
 
     with db_conn:
         db_conn.execute("""
-            INSERT INTO runs (id, agent_id, repo, started_at) 
+            INSERT INTO runs (id, agent_id, repo, started_at)
             VALUES (?, ?, ?, ?)
         """, (run.id, run.agent_id, run.repo, run.started_at.isoformat()))
 
@@ -71,7 +71,7 @@ def test_insert_and_retrieve_fact(db_conn):
     # Read current facts for scope
     cursor = db_conn.cursor()
     cursor.execute("""
-        SELECT * FROM facts 
+        SELECT * FROM facts
         WHERE scope = ? AND valid_to IS NULL AND superseded_by IS NULL
     """, (fact.scope,))
 

@@ -1,6 +1,5 @@
 import uuid
 from datetime import UTC, datetime
-from enum import Enum
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +12,7 @@ except ImportError:
         return uuid.uuid4()
 
 from enum import StrEnum
+
 
 class FactType(StrEnum):
     INSIGHT = "insight"

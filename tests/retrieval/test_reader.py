@@ -381,7 +381,7 @@ class TestFormatResultsForAgent:
         output = format_results_for_agent(results, scope="myrepo")
         # Should NOT have ⚠ for non-gotcha
         lines = output.split("\n")
-        fact_line = next(l for l in lines if "insight" in l)
+        fact_line = next(line for line in lines if "insight" in line)
         assert "⚠" not in fact_line
 
     def test_contains_fact_id_and_known_since(self):

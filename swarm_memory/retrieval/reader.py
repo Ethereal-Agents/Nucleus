@@ -151,7 +151,7 @@ def reciprocal_rank_fusion(
         weights = [1.0] * len(result_lists)
 
     scores: dict[str, float] = defaultdict(float)
-    for weight, results in zip(weights, result_lists):
+    for weight, results in zip(weights, result_lists, strict=False):
         for rank, (doc_id, _raw_score) in enumerate(results, start=1):
             scores[doc_id] += weight / (k + rank)
 
@@ -630,13 +630,10 @@ class FactReader:
                 fused = reciprocal_rank_fusion(
                     dense_results, bm25_results, weights=[1.0, 0.8]
                 )
-                retrieval_method = "hybrid"
             elif dense_results:
                 fused = [(fid, score) for fid, score in dense_results]
-                retrieval_method = "dense"
             elif bm25_results:
                 fused = [(fid, score) for fid, score in bm25_results]
-                retrieval_method = "bm25"
             else:
                 return []  # nothing found
 
