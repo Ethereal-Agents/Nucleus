@@ -1,7 +1,8 @@
-from pydantic import BaseModel, Field
-from datetime import datetime, timezone
-from enum import Enum
 import uuid
+from datetime import UTC, datetime
+from enum import Enum
+
+from pydantic import BaseModel, Field
 
 # Provide a fallback if uuid7 is not installed/patched in standard library
 try:
@@ -11,14 +12,16 @@ except ImportError:
     def uuid7():
         return uuid.uuid4()
 
-class FactType(str, Enum):
+from enum import StrEnum
+
+class FactType(StrEnum):
     INSIGHT = "insight"
     CONVENTION = "convention"
     ARCHITECTURE = "architecture"
     GOTCHA = "gotcha"
     DEPENDENCY = "dependency"
 
-class Relationship(str, Enum):
+class Relationship(StrEnum):
     SUPERSEDES = "SUPERSEDES"
     REFINES = "REFINES"
     INDEPENDENT = "INDEPENDENT"
@@ -32,7 +35,7 @@ class Fact(BaseModel):
     valid_from: datetime
     valid_to: datetime | None = None
     superseded_by: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_run_id: str
     source_branch: str | None = None
     content_hash: str | None = None
@@ -50,7 +53,7 @@ class Run(BaseModel):
     total_cost_usd: float = 0.0
     started_at: datetime
     finished_at: datetime | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 class SearchResult(BaseModel):
     fact: Fact

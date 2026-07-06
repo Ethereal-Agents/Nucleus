@@ -1,6 +1,4 @@
 import sqlite3
-from pathlib import Path
-from typing import Optional
 
 from swarm_memory.core.config import DB_PATH
 
@@ -80,20 +78,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_vec USING vec0(
 """
 
 
-def get_db(path: Optional[str] = None) -> sqlite3.Connection:
+def get_db(path: str | None = None) -> sqlite3.Connection:
     if path is None:
         path = DB_PATH
-        
+
     conn = sqlite3.connect(path, isolation_level=None) # Auto-commit mode for setup, we can use transactions manually
     conn.row_factory = sqlite3.Row
-    
+
     # Performance-critical PRAGMAs
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA cache_size=-64000")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
-    
+
     # Load sqlite-vec extension
     try:
         import sqlite_vec
@@ -104,7 +102,7 @@ def get_db(path: Optional[str] = None) -> sqlite3.Connection:
     except ImportError:
         print("Warning: sqlite_vec not found. Vector search will be disabled.")
         vec_loaded = False
-        
+
     return conn, vec_loaded
 
 
@@ -114,7 +112,7 @@ def init_db(conn: sqlite3.Connection, vec_loaded: bool = False, embed_dim: int =
     if vec_loaded:
         conn.executescript(_VEC_SCHEMA.format(dim=embed_dim))
 
-def get_initialized_db(path: Optional[str] = None) -> sqlite3.Connection:
+def get_initialized_db(path: str | None = None) -> sqlite3.Connection:
     from swarm_memory.core.config import EMBED_DIM
     conn, vec_loaded = get_db(path)
     init_db(conn, vec_loaded, EMBED_DIM)

@@ -16,4 +16,41 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "ruff>=0.5.0",
 ]
+
+# ── Ruff linter + formatter configuration ───────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes (unused imports, undefined names)
+    "I",   # isort (import ordering)
+    "B",   # flake8-bugbear (common bugs)
+    "UP",  # pyupgrade (use modern Python syntax)
+    "N",   # pep8-naming
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "B008",   # do not perform function calls in default args (needed for Pydantic)
+    "N806",   # variable in function should be lowercase (conflicts with SQLite Row patterns)
+    "SIM108", # ternary operator — sometimes less readable for our patterns
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["swarm_memory"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ── Pytest configuration ─────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["tests"]
