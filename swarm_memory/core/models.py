@@ -11,6 +11,7 @@ except ImportError:
     def uuid7():
         return uuid.uuid4()
 
+
 class FactType(str, Enum):
     INSIGHT = "insight"
     CONVENTION = "convention"
@@ -18,10 +19,12 @@ class FactType(str, Enum):
     GOTCHA = "gotcha"
     DEPENDENCY = "dependency"
 
+
 class Relationship(str, Enum):
     SUPERSEDES = "SUPERSEDES"
     REFINES = "REFINES"
     INDEPENDENT = "INDEPENDENT"
+
 
 class Fact(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid7()))
@@ -38,6 +41,7 @@ class Fact(BaseModel):
     content_hash: str | None = None
     extraction_method: str = "llm_summary"
 
+
 class Run(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid7()))
     agent_id: str
@@ -51,6 +55,7 @@ class Run(BaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
 
 class SearchResult(BaseModel):
     fact: Fact
