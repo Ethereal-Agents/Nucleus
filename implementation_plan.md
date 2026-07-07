@@ -194,7 +194,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
     fact_id UNINDEXED,
     content,
     scope UNINDEXED,
-    tokenize='porter unicode61'
+    tokenize='trigram'
 );
 ```
 
