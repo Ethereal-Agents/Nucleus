@@ -84,7 +84,7 @@ def get_db(path: Optional[str] = None) -> tuple[sqlite3.Connection, bool]:
         path = DB_PATH
 
     conn = sqlite3.connect(
-        path, isolation_level=None
+        path, isolation_level=None, check_same_thread=False
     )  # Auto-commit mode for setup, we can use transactions manually
     conn.row_factory = sqlite3.Row
 
