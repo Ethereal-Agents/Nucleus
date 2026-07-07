@@ -8,8 +8,8 @@ dependencies = [
     "sentence-transformers>=3.0",
     "numpy>=1.26",
     "pydantic>=2.0",
-    "anthropic>=0.40",
     "uuid7>=0.1.0",
+    "litellm>=1.91.0",
 ]
 
 [project.optional-dependencies]
@@ -54,3 +54,11 @@ indent-style = "space"
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.20",
+]
