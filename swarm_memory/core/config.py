@@ -45,6 +45,11 @@ EMBED_DIM = int(os.getenv("SWARM_MEMORY_EMBED_DIM", "768"))
 # Higher k → more uniform; lower k → top-heavy. 60 is the standard default.
 RRF_K = int(os.getenv("SWARM_MEMORY_RRF_K", "60"))
 
+# Weights for dense and BM25 search in RRF fusion.
+# Dense is primary (1.0), BM25 is secondary/booster (0.8).
+DENSE_WEIGHT = float(os.getenv("SWARM_MEMORY_DENSE_WEIGHT", "1.0"))
+BM25_WEIGHT = float(os.getenv("SWARM_MEMORY_BM25_WEIGHT", "0.8"))
+
 # Confidence decay per day (0.01 = 1% per day).
 # Applied to fact relevance scores to give recency bias:
 #   adjusted_score = score * max(DECAY_FLOOR, 1.0 - age_days * DECAY_RATE)
