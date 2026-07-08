@@ -17,15 +17,14 @@ Test strategy:
 from __future__ import annotations
 
 import sqlite3
-import time
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from swarm_memory.core.models import Fact, FactType, SearchResult
 from swarm_memory.core.embeddings import PREFIX_DOCUMENT, PREFIX_QUERY, EmbeddingModel
+from swarm_memory.core.models import Fact, FactType, SearchResult
 from swarm_memory.core.utils import timed
 from swarm_memory.retrieval.reader import (
     FactReader,
@@ -387,8 +386,6 @@ class TestApplyGotchaPriority:
         assert ordered[0].fact.id == "G1"
         assert ordered[1].fact.id == "G2"
         assert ordered[2].fact.id == "A"
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════

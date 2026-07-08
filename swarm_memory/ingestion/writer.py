@@ -209,7 +209,9 @@ class FactWriter:
 
         return WriteResult(fact_id=new_fact.id, superseded_ids=superseded_ids, status="created")
 
-    def invalidate_fact(self, fact_id: str, valid_to: str, superseded_by: str | None = None) -> None:
+    def invalidate_fact(
+        self, fact_id: str, valid_to: str, superseded_by: str | None = None
+    ) -> None:
         """
         Invalidates a fact by setting its valid_to timestamp and optionally its superseded_by FK.
         Also removes it from the FTS index so it no longer appears in keyword searches.
@@ -219,7 +221,6 @@ class FactWriter:
             [valid_to, superseded_by, fact_id],
         )
         self.db.execute("DELETE FROM facts_fts WHERE fact_id = ?", [fact_id])
-
 
     def _commit_fact_transaction(
         self,

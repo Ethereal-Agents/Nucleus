@@ -28,15 +28,13 @@ import contextlib
 import logging
 import re
 import sqlite3
-import time
 from collections import defaultdict
-from collections.abc import Generator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from swarm_memory.core import config
-from swarm_memory.core.models import Fact, FactType, SearchResult
 from swarm_memory.core.embeddings import EmbeddingModel
+from swarm_memory.core.models import Fact, FactType, SearchResult
+from swarm_memory.core.utils import timed
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +82,6 @@ _STOP_WORDS: frozenset[str] = frozenset(
 )
 
 
-from swarm_memory.core.utils import timed
 # ═══════════════════════════════════════════════════════════════════════════
 # Pure helper functions (no DB access, fully unit-testable)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -215,6 +212,7 @@ def apply_gotcha_priority(results: list[SearchResult]) -> list[SearchResult]:
     gotchas = [r for r in results if r.fact.fact_type == FactType.GOTCHA]
     others = [r for r in results if r.fact.fact_type != FactType.GOTCHA]
     return gotchas + others
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # FactReader — the main retrieval engine

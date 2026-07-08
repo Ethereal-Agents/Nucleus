@@ -3,19 +3,20 @@ swarm_memory/server/mcp.py
 
 FastMCP server for SwarmMemory. Exposes the bi-temporal memory hub tools.
 """
+
 import argparse
 import datetime
 
 from fastmcp import FastMCP
 
 from swarm_memory.core.embeddings import EmbeddingModel
+from swarm_memory.core.models import uuid7
 from swarm_memory.ingestion.supersession import ContradictionDetector
 from swarm_memory.ingestion.writer import FactWriter
 from swarm_memory.retrieval.reader import FactReader
 from swarm_memory.server.presentation import format_results_for_agent
 from swarm_memory.server.session import SessionManager
 from swarm_memory.store.db import get_initialized_db
-from swarm_memory.core.models import uuid7
 
 # Initialize dependencies
 db = get_initialized_db()
@@ -41,13 +42,13 @@ async def memory_write(
     """
     Write a new architectural decision, gotcha, or insight to the shared memory hub.
     WARNING: This modifies the global shared context for all future agents.
-    
+
     Use this to persist important knowledge that other agents working on this repo
     should know. Automatically detects and supersedes contradicting older facts using an LLM.
-    
+
     Parameters:
     - content: The plain-text fact to memorize (e.g., "The auth module uses JWTs, not sessions.")
-    - scope: The hierarchical scope this applies to (e.g., "my-repo", "my-repo/src/auth"). 
+    - scope: The hierarchical scope this applies to (e.g., "my-repo", "my-repo/src/auth").
       Use narrower scopes for specific module details and root scopes for global conventions.
     - run_id: Your current session ID (obtained from memory_begin_run).
     - fact_type: The category of the fact. Must be one of 'insight', 'gotcha', 'convention', or 'architecture'. Default is 'insight'.
@@ -78,10 +79,10 @@ def memory_search(
     """
     Search for relevant facts using hybrid retrieval (semantic + keyword).
     Returns a formatted context block ready for injection into your context.
-    
+
     Use this tool when you need to understand existing conventions, architecture,
     or past gotchas in a specific part of the codebase.
-    
+
     Parameters:
     - query: Natural language search query (e.g., "How does authentication work?").
     - scope: (Optional) The hierarchical scope to restrict the search to (e.g., "my-repo/src/auth"). If omitted, searches globally across the repo.
@@ -123,9 +124,9 @@ def memory_invalidate(
     """
     Manually invalidate a fact that is no longer true.
     WARNING: This is a destructive action that hides the fact from future searches.
-    
+
     Use this only when you are absolutely certain a fact is outdated (e.g., a deprecated library was removed).
-    
+
     Parameters:
     - fact_id: The unique ID of the fact to invalidate (obtained from memory_search results).
     - reason: A brief explanation of why this fact is no longer valid.
@@ -133,10 +134,10 @@ def memory_invalidate(
     """
     if not valid_to:
         valid_to = datetime.datetime.now(datetime.UTC).isoformat()
-    
+
     writer.invalidate_fact(fact_id, valid_to=valid_to)
     db.commit()
-    
+
     return {"status": "invalidated", "fact_id": fact_id, "reason": reason}
 
 
@@ -147,23 +148,19 @@ def memory_list_runs(
 ) -> list[dict]:
     """
     List recent agent runs for a repository.
-    
+
     Use this tool to see what other agents have recently worked on.
-    
+
     Parameters:
     - repo: (Optional) Filter by repository name.
     - limit: Maximum number of runs to return (default 10).
     """
     if repo:
         rows = db.execute(
-            "SELECT * FROM runs WHERE repo = ? ORDER BY started_at DESC LIMIT ?", 
-            [repo, limit]
+            "SELECT * FROM runs WHERE repo = ? ORDER BY started_at DESC LIMIT ?", [repo, limit]
         ).fetchall()
     else:
-        rows = db.execute(
-            "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", 
-            [limit]
-        ).fetchall()
+        rows = db.execute("SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", [limit]).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -177,11 +174,11 @@ def memory_begin_run(
     """
     Register the start of an agent run. Returns a run_id to pass to all
     subsequent memory_write and memory_search calls.
-    
-    You MUST call this tool once at the beginning of your workflow before using 
-    other memory tools. It ensures your queries are deduplicated so you don't 
+
+    You MUST call this tool once at the beginning of your workflow before using
+    other memory tools. It ensures your queries are deduplicated so you don't
     see the same results repeatedly.
-    
+
     Parameters:
     - repo: The root name of the repository you are working on (e.g., "Nuclues").
     - agent_id: Your unique identifier or role name.
@@ -191,11 +188,11 @@ def memory_begin_run(
     run_id = str(uuid7())
     started_at = datetime.datetime.now(datetime.UTC).isoformat()
     created_at = started_at
-    
+
     db.execute(
-        '''INSERT INTO runs (id, agent_id, repo, branch, model, started_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)''',
-        [run_id, agent_id, repo, branch, model, started_at, created_at]
+        """INSERT INTO runs (id, agent_id, repo, branch, model, started_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [run_id, agent_id, repo, branch, model, started_at, created_at],
     )
     db.commit()
     return {"run_id": run_id, "status": "started"}
@@ -241,10 +238,10 @@ def memory_end_run(
     """
     finished_at = datetime.datetime.now(datetime.UTC).isoformat()
     db.execute(
-        '''UPDATE runs 
+        """UPDATE runs
            SET summary = ?, input_tokens = ?, output_tokens = ?, total_cost_usd = ?, finished_at = ?
-           WHERE id = ?''',
-        [summary, input_tokens, output_tokens, total_cost_usd, finished_at, run_id]
+           WHERE id = ?""",
+        [summary, input_tokens, output_tokens, total_cost_usd, finished_at, run_id],
     )
     db.commit()
     session_manager.end_session(run_id)
