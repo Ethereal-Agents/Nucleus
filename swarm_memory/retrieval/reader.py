@@ -28,15 +28,20 @@ import contextlib
 import logging
 import re
 import sqlite3
+import time
 from collections import defaultdict
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from swarm_memory.core import config
-from swarm_memory.core.embeddings import EmbeddingModel
 from swarm_memory.core.models import Fact, FactType, SearchResult
-from swarm_memory.core.utils import timed
+from swarm_memory.retrieval.embeddings import EmbeddingModel
 
 logger = logging.getLogger(__name__)
+
+SECONDS_PER_DAY = 86400
+
 
 # ── Stop words for FTS5 NL preprocessing (§3.6) ────────────────────────────
 
@@ -77,6 +82,37 @@ _STOP_WORDS: frozenset[str] = frozenset(
         "its",
     }
 )
+
+# ── Session deduplication state (§14.3) ─────────────────────────────────────
+# Module-level dict so it is shared across all FactReader instances within the
+# same server process — the key property for a centralized SSE server.
+#
+# Structure: run_id → (set of fact IDs already shown, last-access unix timestamp)
+_session_seen: dict[str, tuple[set[str], float]] = {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Timing utility
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@contextmanager
+def timed(label: str) -> Generator[None, None, None]:
+    """
+    Context manager that logs the wall-clock duration of a code block.
+
+    Shared utility — also importable by Person A's ingestion/writer.py.
+
+    Example:
+        with timed("dense_search"):
+            results = db.execute(...)
+    """
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.debug("⏱  %s: %.1f ms", label, elapsed_ms)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -211,6 +247,86 @@ def apply_gotcha_priority(results: list[SearchResult]) -> list[SearchResult]:
     return gotchas + others
 
 
+def format_results_for_agent(results: list[SearchResult], scope: str) -> str:
+    """
+    Format search results as a human/LLM-readable context block.
+
+    Agents are LLMs. Raw JSON with RRF scores is noise to them. This function
+    returns a structured plain-text block that agents can inject directly into
+    their reasoning context.
+
+    Key formatting rules (§14.2):
+    - Gotchas get a ⚠ prefix and always appear first (see apply_gotcha_priority).
+    - fact_id and known-since date are included so agents can call
+      memory_invalidate() without a second lookup.
+    - Numeric scores (RRF, confidence, distance) are stripped — meaningless to LLMs.
+    - Empty results still return a message (never silently empty).
+
+    Args:
+        results: Ordered list of SearchResult objects to format.
+        scope:   The scope that was queried (used in the header).
+
+    Returns:
+        A formatted multi-line string, ready to inject into agent context.
+    """
+    if not results:
+        return f"[MEMORY HUB — no relevant facts found for scope: {scope}]"
+
+    lines = [f"[MEMORY HUB — {len(results)} fact(s) for {scope}]", ""]
+
+    for result in results:
+        fact = result.fact
+        prefix = "⚠ " if fact.fact_type == FactType.GOTCHA else ""
+        lines.append(f"{prefix}[{fact.fact_type.value}] {fact.scope}")
+        lines.append(fact.content)
+        # known_since is the valid_from date (when the fact became true)
+        known_since = fact.valid_from.strftime("%Y-%m-%d") if fact.valid_from else "unknown"
+        lines.append(f"→ id: {fact.id}  |  known since: {known_since}")
+        lines.append("")
+
+    lines.append('If any fact above is outdated, call: memory_invalidate(fact_id, reason="...")')
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Session deduplication (module-level, shared across all FactReader instances)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _evict_stale_sessions() -> None:
+    """
+    Remove sessions that have been idle for longer than SESSION_TTL_SECONDS.
+
+    This is a safety net for agents that crash without calling memory_end_run().
+    Without eviction, orphaned sessions would leak memory in the server process.
+
+    Called at the top of every search_with_dedup() — cheap O(sessions) scan
+    since the number of concurrent agent sessions is expected to be small.
+    """
+    cutoff = time.time() - config.SESSION_TTL_SECONDS
+    stale_ids = [
+        run_id for run_id, (_seen_ids, last_access) in _session_seen.items() if last_access < cutoff
+    ]
+    for run_id in stale_ids:
+        del _session_seen[run_id]
+        logger.debug("Evicted stale session: %s", run_id)
+
+
+def end_session(run_id: str) -> None:
+    """
+    Explicitly evict a session from the deduplication store.
+
+    Called by the MCP server's memory_end_run() tool when an agent finishes
+    its run cleanly. After this call, the agent's seen-fact-IDs set is cleared,
+    so if the same agent starts a new run, it will receive fresh results.
+
+    Args:
+        run_id: The run ID returned by memory_begin_run().
+    """
+    _session_seen.pop(run_id, None)
+    logger.debug("Session ended and evicted: %s", run_id)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # FactReader — the main retrieval engine
 # ═══════════════════════════════════════════════════════════════════════════
@@ -253,6 +369,7 @@ class FactReader:
         query_vec: bytes,
         scope_tiers: list[tuple[str, int]],
         top_n: int = 20,
+        as_of: str | None = None,
     ) -> list[tuple[str, float]]:
         """
         KNN vector search via sqlite-vec.
@@ -262,8 +379,9 @@ class FactReader:
 
         Args:
             query_vec:   float32 bytes for the query (from embed_query).
-            scope_tiers: Output of resolve_scope_tiers(scope).
+            scope_tiers: Output of resolve_scope_tiers(scope). Can be empty for global search.
             top_n:       Number of candidates to return (over-fetch for RRF).
+            as_of:       ISO timestamp for time-travel.
 
         Returns:
             [(fact_id, distance), ...] sorted ascending by distance (lower = closer).
@@ -271,24 +389,43 @@ class FactReader:
         if not self._vec_available:
             return []
 
-        scope_paths = [s for s, _ in scope_tiers]
-        placeholders = ",".join("?" * len(scope_paths))
+        if as_of:
+            time_filter = "AND f.valid_from <= ? AND (f.valid_to IS NULL OR f.valid_to > ?)"
+            time_params = [as_of, as_of]
+        else:
+            time_filter = "AND f.valid_to IS NULL AND f.superseded_by IS NULL"
+            time_params = []
 
         with timed("dense_search"):
-            rows = self._conn.execute(
-                f"""
-                SELECT fv.fact_id, fv.distance
-                FROM facts_vec fv
-                JOIN facts f ON fv.fact_id = f.id
-                WHERE fv.embedding MATCH ?
-                  AND f.scope IN ({placeholders})
-                  AND f.valid_to IS NULL
-                  AND f.superseded_by IS NULL
-                ORDER BY fv.distance
-                LIMIT ?
-                """,
-                [query_vec, *scope_paths, top_n],
-            ).fetchall()
+            if scope_tiers:
+                scope_paths = [s for s, _ in scope_tiers]
+                placeholders = ",".join("?" * len(scope_paths))
+                rows = self._conn.execute(
+                    f"""
+                    SELECT fv.fact_id, fv.distance
+                    FROM facts_vec fv
+                    JOIN facts f ON fv.fact_id = f.id
+                    WHERE fv.embedding MATCH ?
+                      AND f.scope IN ({placeholders})
+                      {time_filter}
+                    ORDER BY fv.distance
+                    LIMIT ?
+                    """,
+                    [query_vec, *scope_paths, *time_params, top_n],
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    f"""
+                    SELECT fv.fact_id, fv.distance
+                    FROM facts_vec fv
+                    JOIN facts f ON fv.fact_id = f.id
+                    WHERE fv.embedding MATCH ?
+                      {time_filter}
+                    ORDER BY fv.distance
+                    LIMIT ?
+                    """,
+                    [query_vec, *time_params, top_n],
+                ).fetchall()
 
         # Lower distance = more similar; convert to (id, score) keeping distance
         return [(row["fact_id"], row["distance"]) for row in rows]
@@ -298,6 +435,7 @@ class FactReader:
         fts_expr: str,
         scope_tiers: list[tuple[str, int]],
         top_n: int = 20,
+        as_of: str | None = None,
     ) -> list[tuple[str, float]]:
         """
         BM25 keyword search via FTS5.
@@ -307,30 +445,50 @@ class FactReader:
 
         Args:
             fts_expr:    Pre-processed FTS5 MATCH expression (from preprocess_for_fts5).
-            scope_tiers: Output of resolve_scope_tiers(scope).
+            scope_tiers: Output of resolve_scope_tiers(scope). Can be empty for global search.
             top_n:       Number of candidates to return.
+            as_of:       ISO timestamp for time-travel.
 
         Returns:
             [(fact_id, bm25_score), ...] sorted descending by BM25 (most relevant first).
         """
-        scope_paths = [s for s, _ in scope_tiers]
-        placeholders = ",".join("?" * len(scope_paths))
+        if as_of:
+            time_filter = "AND f.valid_from <= ? AND (f.valid_to IS NULL OR f.valid_to > ?)"
+            time_params = [as_of, as_of]
+        else:
+            time_filter = "AND f.valid_to IS NULL AND f.superseded_by IS NULL"
+            time_params = []
 
         with timed("bm25_search"):
-            rows = self._conn.execute(
-                f"""
-                SELECT ff.fact_id, bm25(facts_fts) AS score
-                FROM facts_fts ff
-                JOIN facts f ON ff.fact_id = f.id
-                WHERE facts_fts MATCH ?
-                  AND f.scope IN ({placeholders})
-                  AND f.valid_to IS NULL
-                  AND f.superseded_by IS NULL
-                ORDER BY score          -- bm25() is negative; higher (less negative) = better
-                LIMIT ?
-                """,
-                [fts_expr, *scope_paths, top_n],
-            ).fetchall()
+            if scope_tiers:
+                scope_paths = [s for s, _ in scope_tiers]
+                placeholders = ",".join("?" * len(scope_paths))
+                rows = self._conn.execute(
+                    f"""
+                    SELECT ff.fact_id, bm25(facts_fts) AS score
+                    FROM facts_fts ff
+                    JOIN facts f ON ff.fact_id = f.id
+                    WHERE facts_fts MATCH ?
+                      AND f.scope IN ({placeholders})
+                      {time_filter}
+                    ORDER BY score          -- bm25() is negative; higher (less negative) = better
+                    LIMIT ?
+                    """,
+                    [fts_expr, *scope_paths, *time_params, top_n],
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    f"""
+                    SELECT ff.fact_id, bm25(facts_fts) AS score
+                    FROM facts_fts ff
+                    JOIN facts f ON ff.fact_id = f.id
+                    WHERE facts_fts MATCH ?
+                      {time_filter}
+                    ORDER BY score          -- bm25() is negative; higher (less negative) = better
+                    LIMIT ?
+                    """,
+                    [fts_expr, *time_params, top_n],
+                ).fetchall()
 
         return [(row["fact_id"], row["score"]) for row in rows]
 
@@ -419,7 +577,7 @@ class FactReader:
             fact_time = fact.created_at
             if fact_time.tzinfo is None:
                 fact_time = fact_time.replace(tzinfo=UTC)
-            age_days = max(0.0, (now - fact_time).total_seconds() / 86400)
+            age_days = max(0.0, (now - fact_time).total_seconds() / SECONDS_PER_DAY)
 
             # Recency decay: 1% per day, minimum 50% multiplier
             decay = max(
@@ -446,12 +604,14 @@ class FactReader:
         as_of: str | None = None,
         top_k: int = 5,
         fact_type: str | None = None,
-        exclude_ids: set[str] | None = None,
     ) -> list[SearchResult]:
         """
         Run a full hybrid search query and return ranked SearchResult objects.
 
-        Pipeline steps 1-11:
+        This is the core method called by search_with_dedup() and directly
+        by the MCP server's memory_search tool.
+
+        Pipeline steps 1-10 (session dedup is step 9, handled by caller):
           1. Resolve scope tiers
           2. Embed query (dense path)
           3. Dense KNN search (or skip if vec unavailable)
@@ -460,28 +620,24 @@ class FactReader:
           6. RRF fusion (dense weighted 1.0, BM25 weighted 0.8)
           7. Temporal filter (valid_to IS NULL or as_of range)
           8. Confidence decay
-          9. Filter out excluded IDs (e.g., for session deduplication)
+          9. [Session dedup — handled externally by search_with_dedup]
           10. Gotcha-first re-rank
           11. Trim to top_k
 
         Args:
-            query:       Natural language search query.
-            scope:       Scope to search within. Applies hierarchy resolution.
-                         None searches across all scopes (useful for session-start mode).
-            as_of:       ISO-8601 timestamp for point-in-time query (default: now).
-            top_k:       Maximum number of results to return.
-            fact_type:   Optional filter to restrict results to a specific FactType.
-            exclude_ids: Optional set of fact IDs to filter out of the results.
+            query:     Natural language search query.
+            scope:     Scope to search within. Applies hierarchy resolution.
+                       None searches across all scopes (useful for session-start mode).
+            as_of:     ISO-8601 timestamp for point-in-time query (default: now).
+            top_k:     Maximum number of results to return.
+            fact_type: Optional filter to restrict results to a specific FactType.
 
         Returns:
             List of SearchResult objects, ordered by adjusted relevance score,
             with gotchas always first.
         """
         now = datetime.now(UTC)
-        exclude_set = exclude_ids or set()
-
-        # Over-fetch so temporal/type filters and exclude_ids have headroom
-        OVER_FETCH = (top_k + len(exclude_set)) * 4
+        OVER_FETCH = top_k * 4  # over-fetch so temporal/type filters have headroom
 
         # Step 1: Resolve scope hierarchy
         scope_tiers = resolve_scope_tiers(scope) if scope else []
@@ -489,50 +645,15 @@ class FactReader:
         # Step 2 + 3: Dense search (always runs when vec is available)
         with timed("search.dense"):
             query_vec = self._embedder.embed_query(query)
-            dense_results = (
-                self._dense_search(query_vec, scope_tiers, top_n=OVER_FETCH) if scope_tiers else []
+            dense_results = self._dense_search(
+                query_vec, scope_tiers, top_n=OVER_FETCH, as_of=as_of
             )
-            # Without scope, fall back to global dense (no scope filter)
-            if not scope_tiers and self._vec_available:
-                with timed("search.dense_global"):
-                    rows = self._conn.execute(
-                        """
-                        SELECT fv.fact_id, fv.distance
-                        FROM facts_vec fv
-                        JOIN facts f ON fv.fact_id = f.id
-                        WHERE fv.embedding MATCH ?
-                          AND f.valid_to IS NULL
-                          AND f.superseded_by IS NULL
-                        ORDER BY fv.distance
-                        LIMIT ?
-                        """,
-                        [query_vec, OVER_FETCH],
-                    ).fetchall()
-                    dense_results = [(r["fact_id"], r["distance"]) for r in rows]
 
         # Step 4 + 5: BM25 search (skipped if query is too vague)
         fts_expr = preprocess_for_fts5(query)
         bm25_results: list[tuple[str, float]] = []
         if fts_expr:
-            with timed("search.bm25"):
-                if scope_tiers:
-                    bm25_results = self._bm25_search(fts_expr, scope_tiers, top_n=OVER_FETCH)
-                else:
-                    # Global BM25 (no scope filter)
-                    rows = self._conn.execute(
-                        """
-                        SELECT ff.fact_id, bm25(facts_fts) AS score
-                        FROM facts_fts ff
-                        JOIN facts f ON ff.fact_id = f.id
-                        WHERE facts_fts MATCH ?
-                          AND f.valid_to IS NULL
-                          AND f.superseded_by IS NULL
-                        ORDER BY score
-                        LIMIT ?
-                        """,
-                        [fts_expr, OVER_FETCH],
-                    ).fetchall()
-                    bm25_results = [(r["fact_id"], r["score"]) for r in rows]
+            bm25_results = self._bm25_search(fts_expr, scope_tiers, top_n=OVER_FETCH, as_of=as_of)
         else:
             logger.debug("Query '%s' is all stop words — using dense-only retrieval", query)
 
@@ -541,7 +662,9 @@ class FactReader:
         # BM25 weighted 0.8 (booster for technical term matches)
         with timed("search.rrf"):
             if dense_results and bm25_results:
-                fused = reciprocal_rank_fusion(dense_results, bm25_results, weights=[1.0, 0.8])
+                fused = reciprocal_rank_fusion(
+                    dense_results, bm25_results, weights=[config.DENSE_WEIGHT, config.BM25_WEIGHT]
+                )
             elif dense_results:
                 fused = [(fid, score) for fid, score in dense_results]
             elif bm25_results:
@@ -567,12 +690,65 @@ class FactReader:
         # Preserve RRF order after decay (sort by adjusted score descending)
         results.sort(key=lambda r: r.relevance_score, reverse=True)
 
-        # Step 9: Filter out excluded IDs
-        if exclude_set:
-            results = [r for r in results if r.fact.id not in exclude_set]
-
         # Step 10: Gotcha-first re-rank
         results = apply_gotcha_priority(results)
 
         # Step 11: Trim
         return results[:top_k]
+
+    def search_with_dedup(
+        self,
+        query: str,
+        scope: str | None,
+        run_id: str,
+        top_k: int = 5,
+        as_of: str | None = None,
+        fact_type: str | None = None,
+    ) -> list[SearchResult]:
+        """
+        Search with in-session deduplication.
+
+        Agents query multiple times per run. Without dedup, the same gotcha
+        would appear in every response, wasting tokens and LLM attention.
+        This method tracks which fact IDs have been shown for a given run_id
+        and filters them out of subsequent queries.
+
+        Over-fetches by len(seen) to compensate for filtered-out results,
+        ensuring top_k fresh results are always returned when available.
+
+        Args:
+            query:     Natural language query.
+            scope:     Scope filter (with hierarchy resolution).
+            run_id:    The agent's current run ID (from memory_begin_run).
+            top_k:     Number of fresh (not-yet-seen) results to return.
+            as_of:     Optional point-in-time filter.
+            fact_type: Optional fact type filter.
+
+        Returns:
+            List of SearchResult objects the agent has NOT yet seen this session.
+        """
+        # Evict stale sessions first (safety net for crashed agents)
+        _evict_stale_sessions()
+
+        # Get or create the session state for this run_id
+        seen_ids, _ = _session_seen.get(run_id, (set(), 0.0))
+
+        # Over-fetch: request extra results to cover already-seen IDs
+        fetch_k = top_k + len(seen_ids)
+
+        candidates = self.search(
+            query=query,
+            scope=scope,
+            as_of=as_of,
+            top_k=fetch_k,
+            fact_type=fact_type,
+        )
+
+        # Filter to only fresh (not-yet-seen) results
+        fresh = [r for r in candidates if r.fact.id not in seen_ids][:top_k]
+
+        # Update session state with newly shown fact IDs
+        new_seen = seen_ids | {r.fact.id for r in fresh}
+        _session_seen[run_id] = (new_seen, time.time())
+
+        return fresh
