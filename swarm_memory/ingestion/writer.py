@@ -52,7 +52,12 @@ class FactWriter:
         self.detector = detector
 
     def _find_similar_valid_facts(
-        self, embedding: bytes, scope: str, threshold: float = 0.75, limit: int = 5, exclude_ids: set[str] | None = None
+        self,
+        embedding: bytes,
+        scope: str,
+        threshold: float = 0.75,
+        limit: int = 5,
+        exclude_ids: set[str] | None = None,
     ) -> list[Fact]:
         """
         Find existing facts in the same scope that are semantically similar.
@@ -157,14 +162,20 @@ class FactWriter:
             if row:
                 hint_fact = Fact(**dict(row))
             else:
-                logger.warning("supersedes_hint %s is invalid or already superseded; ignoring.", supersedes_hint)
+                logger.warning(
+                    "supersedes_hint %s is invalid or already superseded; ignoring.",
+                    supersedes_hint,
+                )
 
         with timed("write.embed"):
             embedding = self.embedder.embed(content, prefix="search_document: ")
 
         candidates = self._find_similar_valid_facts(
-            embedding, scope, threshold=0.75, limit=5,
-            exclude_ids={supersedes_hint} if hint_fact else None
+            embedding,
+            scope,
+            threshold=0.75,
+            limit=5,
+            exclude_ids={supersedes_hint} if hint_fact else None,
         )
 
         with timed("write.detect_contradictions"):
