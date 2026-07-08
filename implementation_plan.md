@@ -194,7 +194,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
     fact_id UNINDEXED,
     content,
     scope UNINDEXED,
-    tokenize='porter unicode61'
+    tokenize='trigram'
 );
 ```
 
@@ -1419,3 +1419,83 @@ def memory_search(
 
 > [!IMPORTANT]
 > The return type is `str` (a formatted block), not `list[SearchResult]`. The agent should inject this directly into its reasoning. Returning structured JSON forces every agent to re-implement formatting and risks LLMs ignoring low-salience fields.
+
+---
+
+## 15. Centralized Swarm Architecture via SSE Transport
+
+To realize the primary goal of a **centralized, shared coding-context hub** for multi-agent teams, the deployment transport must be upgraded from transient point-to-point stdio to a persistent network-based transport.
+
+### 15.1 Architectural Shift: Stdio vs. SSE
+
+```mermaid
+graph TD
+    A1["Agent A (Process/Machine 1)"] -->|HTTP/SSE| SSE["Central FastMCP Server"]
+    A2["Agent B (Process/Machine 2)"] -->|HTTP/SSE| SSE
+    A3["Agent C (Process/Machine 3)"] -->|HTTP/SSE| SSE
+    
+    subgraph "Central Context Service"
+        SSE --> DB["Single SQLite DB (WAL Mode)"]
+        SSE --> EMB["Local SentenceTransformers (nomic)"]
+        SSE --> DEDUP["Shared Session Dedup State"]
+    end
+```
+
+| Component | Transient Stdio Model (Initial Plan) | Centralized SSE Model (Updated) |
+|---|---|---|
+| **Server Lifetime** | Short-lived (spawns/dies with parent client) | Long-lived (runs continuously on shared host/localhost) |
+| **Transport** | `stdio` (standard input/output pipes) | `sse` (Server-Sent Events over HTTP) |
+| **Database Access** | Shared file path (susceptible to locking/concurrency corruption) | Single-process access (all DB writes/reads serialized via server process) |
+| **Model Footprint** | Every agent client loads `sentence-transformers` | Only the central server loads and runs the model |
+| **Session Dedup** | Isolated to client process (lost between runs) | Centralized memory space (consistent across concurrent swarms) |
+
+### 15.2 Server Execution in SSE Mode
+
+The MCP server will support running in SSE mode by specifying the transport at startup:
+
+```python
+# swarm_memory/server/mcp.py
+import argparse
+from fastmcp import FastMCP
+
+mcp = FastMCP("SwarmMemory", description="Shared bi-temporal coding context hub")
+
+# ... (tool definitions) ...
+
+def main():
+    parser = argparse.ArgumentParser(description="Start SwarmMemory MCP Server")
+    parser.add_argument("--transport", choices=["stdio", "sse"], default="stdio", help="Transport mechanism")
+    parser.add_argument("--host", default="0.0.0.0", help="SSE host binding")
+    parser.add_argument("--port", type=int, default=8000, help="SSE port binding")
+    args = parser.parse_args()
+
+    if args.transport == "sse":
+        print(f"Starting SwarmMemory MCP Server on SSE http://{args.host}:{args.port}/sse")
+        mcp.run(transport="sse", host=args.host, port=args.port)
+    else:
+        mcp.run(transport="stdio")
+
+if __name__ == "__main__":
+    main()
+```
+
+### 15.3 Client Configuration (Agent Side)
+
+Clients connect to the persistent context server via the network URL:
+
+```json
+{
+  "mcpServers": {
+    "swarm-memory": {
+      "url": "http://<shared-dev-server-ip>:8000/sse"
+    }
+  }
+}
+```
+
+### 15.4 Concurrency & Security Advantages
+
+1. **Serialized SQLite Operations**: SQLite's concurrency safety is guaranteed because only the running server process ever accesses the `.db` file directly. Multiple concurrent SSE requests are handled in-process via thread-safe connection handling or serial async writes.
+2. **Centralized Secret Management**: The Anthropic/OpenRouter API key used by the `ContradictionDetector` for supersession checks is configured on the host server environment (`ANTHROPIC_API_KEY`), removing the need to distribute keys to all agent runtimes.
+3. **Global Session Deduplication**: Session tracking and memory eviction logic (§14.3) occur in the shared server process memory space, successfully preventing duplicate facts from being served to different agents working on the same run.
+

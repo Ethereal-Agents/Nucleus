@@ -369,6 +369,7 @@ class FactReader:
         query_vec: bytes,
         scope_tiers: list[tuple[str, int]],
         top_n: int = 20,
+        as_of: str | None = None,
     ) -> list[tuple[str, float]]:
         """
         KNN vector search via sqlite-vec.
@@ -380,12 +381,20 @@ class FactReader:
             query_vec:   float32 bytes for the query (from embed_query).
             scope_tiers: Output of resolve_scope_tiers(scope). Can be empty for global search.
             top_n:       Number of candidates to return (over-fetch for RRF).
+            as_of:       ISO timestamp for time-travel.
 
         Returns:
             [(fact_id, distance), ...] sorted ascending by distance (lower = closer).
         """
         if not self._vec_available:
             return []
+
+        if as_of:
+            time_filter = "AND f.valid_from <= ? AND (f.valid_to IS NULL OR f.valid_to > ?)"
+            time_params = [as_of, as_of]
+        else:
+            time_filter = "AND f.valid_to IS NULL AND f.superseded_by IS NULL"
+            time_params = []
 
         with timed("dense_search"):
             if scope_tiers:
@@ -398,26 +407,24 @@ class FactReader:
                     JOIN facts f ON fv.fact_id = f.id
                     WHERE fv.embedding MATCH ?
                       AND f.scope IN ({placeholders})
-                      AND f.valid_to IS NULL
-                      AND f.superseded_by IS NULL
+                      {time_filter}
                     ORDER BY fv.distance
                     LIMIT ?
                     """,
-                    [query_vec, *scope_paths, top_n],
+                    [query_vec, *scope_paths, *time_params, top_n],
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    """
+                    f"""
                     SELECT fv.fact_id, fv.distance
                     FROM facts_vec fv
                     JOIN facts f ON fv.fact_id = f.id
                     WHERE fv.embedding MATCH ?
-                      AND f.valid_to IS NULL
-                      AND f.superseded_by IS NULL
+                      {time_filter}
                     ORDER BY fv.distance
                     LIMIT ?
                     """,
-                    [query_vec, top_n],
+                    [query_vec, *time_params, top_n],
                 ).fetchall()
 
         # Lower distance = more similar; convert to (id, score) keeping distance
@@ -428,6 +435,7 @@ class FactReader:
         fts_expr: str,
         scope_tiers: list[tuple[str, int]],
         top_n: int = 20,
+        as_of: str | None = None,
     ) -> list[tuple[str, float]]:
         """
         BM25 keyword search via FTS5.
@@ -439,10 +447,18 @@ class FactReader:
             fts_expr:    Pre-processed FTS5 MATCH expression (from preprocess_for_fts5).
             scope_tiers: Output of resolve_scope_tiers(scope). Can be empty for global search.
             top_n:       Number of candidates to return.
+            as_of:       ISO timestamp for time-travel.
 
         Returns:
             [(fact_id, bm25_score), ...] sorted descending by BM25 (most relevant first).
         """
+        if as_of:
+            time_filter = "AND f.valid_from <= ? AND (f.valid_to IS NULL OR f.valid_to > ?)"
+            time_params = [as_of, as_of]
+        else:
+            time_filter = "AND f.valid_to IS NULL AND f.superseded_by IS NULL"
+            time_params = []
+
         with timed("bm25_search"):
             if scope_tiers:
                 scope_paths = [s for s, _ in scope_tiers]
@@ -454,26 +470,24 @@ class FactReader:
                     JOIN facts f ON ff.fact_id = f.id
                     WHERE facts_fts MATCH ?
                       AND f.scope IN ({placeholders})
-                      AND f.valid_to IS NULL
-                      AND f.superseded_by IS NULL
+                      {time_filter}
                     ORDER BY score          -- bm25() is negative; higher (less negative) = better
                     LIMIT ?
                     """,
-                    [fts_expr, *scope_paths, top_n],
+                    [fts_expr, *scope_paths, *time_params, top_n],
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    """
+                    f"""
                     SELECT ff.fact_id, bm25(facts_fts) AS score
                     FROM facts_fts ff
                     JOIN facts f ON ff.fact_id = f.id
                     WHERE facts_fts MATCH ?
-                      AND f.valid_to IS NULL
-                      AND f.superseded_by IS NULL
+                      {time_filter}
                     ORDER BY score          -- bm25() is negative; higher (less negative) = better
                     LIMIT ?
                     """,
-                    [fts_expr, top_n],
+                    [fts_expr, *time_params, top_n],
                 ).fetchall()
 
         return [(row["fact_id"], row["score"]) for row in rows]
@@ -631,13 +645,15 @@ class FactReader:
         # Step 2 + 3: Dense search (always runs when vec is available)
         with timed("search.dense"):
             query_vec = self._embedder.embed_query(query)
-            dense_results = self._dense_search(query_vec, scope_tiers, top_n=OVER_FETCH)
+            dense_results = self._dense_search(
+                query_vec, scope_tiers, top_n=OVER_FETCH, as_of=as_of
+            )
 
         # Step 4 + 5: BM25 search (skipped if query is too vague)
         fts_expr = preprocess_for_fts5(query)
         bm25_results: list[tuple[str, float]] = []
         if fts_expr:
-            bm25_results = self._bm25_search(fts_expr, scope_tiers, top_n=OVER_FETCH)
+            bm25_results = self._bm25_search(fts_expr, scope_tiers, top_n=OVER_FETCH, as_of=as_of)
         else:
             logger.debug("Query '%s' is all stop words — using dense-only retrieval", query)
 
