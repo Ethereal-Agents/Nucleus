@@ -1,5 +1,4 @@
 import sqlite3
-from typing import Optional
 
 from swarm_memory.core.config import DB_PATH
 
@@ -79,12 +78,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_vec USING vec0(
 """
 
 
-def get_db(path: Optional[str] = None) -> tuple[sqlite3.Connection, bool]:
+def get_db(path: str | None = None) -> sqlite3.Connection:
     if path is None:
         path = DB_PATH
 
     conn = sqlite3.connect(
-        path, isolation_level=None, check_same_thread=False
+        path, isolation_level=None
     )  # Auto-commit mode for setup, we can use transactions manually
     conn.row_factory = sqlite3.Row
 
@@ -117,9 +116,9 @@ def init_db(conn: sqlite3.Connection, vec_loaded: bool = False, embed_dim: int =
         conn.executescript(_VEC_SCHEMA.format(dim=embed_dim))
 
 
-def get_initialized_db(path: Optional[str] = None) -> tuple[sqlite3.Connection, bool]:
+def get_initialized_db(path: str | None = None) -> sqlite3.Connection:
     from swarm_memory.core.config import EMBED_DIM
 
     conn, vec_loaded = get_db(path)
     init_db(conn, vec_loaded, EMBED_DIM)
-    return conn, vec_loaded
+    return conn
