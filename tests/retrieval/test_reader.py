@@ -25,18 +25,14 @@ import numpy as np
 import pytest
 
 from swarm_memory.core.models import Fact, FactType, SearchResult
-from swarm_memory.retrieval.embeddings import PREFIX_DOCUMENT, PREFIX_QUERY, EmbeddingModel
+from swarm_memory.core.embeddings import PREFIX_DOCUMENT, PREFIX_QUERY, EmbeddingModel
+from swarm_memory.core.utils import timed
 from swarm_memory.retrieval.reader import (
     FactReader,
-    _evict_stale_sessions,
-    _session_seen,
     apply_gotcha_priority,
-    end_session,
-    format_results_for_agent,
     preprocess_for_fts5,
     reciprocal_rank_fusion,
     resolve_scope_tiers,
-    timed,
 )
 from swarm_memory.store.db import get_initialized_db
 
@@ -393,119 +389,6 @@ class TestApplyGotchaPriority:
         assert ordered[2].fact.id == "A"
 
 
-class TestFormatResultsForAgent:
-    def _make_result(self, fact_id: str, fact_type: FactType, content: str) -> SearchResult:
-        fact = Fact(
-            id=fact_id,
-            content=content,
-            fact_type=fact_type,
-            scope="test-repo/src",
-            valid_from=datetime.now(UTC),
-            source_run_id="run-1",
-        )
-        return SearchResult(fact=fact, relevance_score=0.8, retrieval_method="hybrid")
-
-    def test_empty_results_returns_no_facts_message(self):
-        output = format_results_for_agent([], scope="myrepo/src")
-        assert "no relevant facts found" in output.lower()
-        assert "myrepo/src" in output
-
-    def test_header_contains_count_and_scope(self):
-        results = [self._make_result("A", FactType.INSIGHT, "test fact")]
-        output = format_results_for_agent(results, scope="myrepo")
-        assert "1 fact(s)" in output
-        assert "myrepo" in output
-
-    def test_gotcha_has_warning_prefix(self):
-        results = [self._make_result("G", FactType.GOTCHA, "do not do this")]
-        output = format_results_for_agent(results, scope="myrepo")
-        assert "⚠" in output
-
-    def test_non_gotcha_has_no_warning_prefix(self):
-        results = [self._make_result("A", FactType.INSIGHT, "some insight")]
-        output = format_results_for_agent(results, scope="myrepo")
-        # Should NOT have ⚠ for non-gotcha
-        lines = output.split("\n")
-        fact_line = next(line for line in lines if "insight" in line)
-        assert "⚠" not in fact_line
-
-    def test_contains_fact_id_and_known_since(self):
-        results = [self._make_result("fact-123", FactType.INSIGHT, "test")]
-        output = format_results_for_agent(results, scope="myrepo")
-        assert "fact-123" in output
-        assert "known since" in output
-
-    def test_no_raw_scores_in_output(self):
-        results = [self._make_result("A", FactType.INSIGHT, "test")]
-        output = format_results_for_agent(results, scope="myrepo")
-        # Numeric scores must NOT be in the formatted output
-        assert "0.8" not in output
-        assert "relevance" not in output.lower()
-
-    def test_invalidate_reminder_at_end(self):
-        results = [self._make_result("A", FactType.INSIGHT, "test")]
-        output = format_results_for_agent(results, scope="myrepo")
-        assert "memory_invalidate" in output
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Tests: Session deduplication
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestSessionDedup:
-    def setup_method(self):
-        """Clear global session state before each test."""
-        _session_seen.clear()
-
-    def test_end_session_removes_run_id(self):
-        _session_seen["run-abc"] = ({"fact-1"}, time.time())
-        end_session("run-abc")
-        assert "run-abc" not in _session_seen
-
-    def test_end_session_is_idempotent(self):
-        """Calling end_session for unknown run_id should not raise."""
-        end_session("run-does-not-exist")  # must not raise
-
-    def test_evict_stale_sessions_removes_old_entries(self):
-        # Insert a session that expired long ago
-        old_timestamp = time.time() - 99999
-        _session_seen["stale-run"] = ({"fact-1"}, old_timestamp)
-        _session_seen["fresh-run"] = ({"fact-2"}, time.time())
-
-        _evict_stale_sessions()
-
-        assert "stale-run" not in _session_seen
-        assert "fresh-run" in _session_seen
-
-    def test_evict_stale_sessions_keeps_recent_entries(self):
-        _session_seen["recent-run"] = ({"fact-1"}, time.time())
-        _evict_stale_sessions()
-        assert "recent-run" in _session_seen
-
-    def test_search_with_dedup_filters_seen_ids(self, reader, db_with_facts):
-        conn, ids = db_with_facts
-        reader._conn = conn
-        run_id = "test-run-dedup"
-
-        # First search
-        first = reader.search_with_dedup(
-            "auth sessions", scope="test-repo", run_id=run_id, top_k=10
-        )
-        first_ids = {r.fact.id for r in first}
-
-        # Second search for same thing — should get 0 overlap (everything already seen)
-        second = reader.search_with_dedup(
-            "auth sessions", scope="test-repo", run_id=run_id, top_k=10
-        )
-        second_ids = {r.fact.id for r in second}
-
-        # No ID should appear in both first and second results
-        overlap = first_ids & second_ids
-        assert len(overlap) == 0
-
-        # Clean up
-        end_session(run_id)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

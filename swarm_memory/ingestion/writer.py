@@ -69,23 +69,23 @@ class FactWriter:
         # For normalized vectors (L2 norm = 1), distance^2 = 2 - 2 * cosine_similarity.
         max_distance = (2.0 - 2.0 * threshold) ** 0.5
         exclude_clause = ""
-        params = [embedding, scope]
+        params = [embedding, limit, scope]
         if exclude_ids:
             placeholders = ",".join("?" * len(exclude_ids))
             exclude_clause = f" AND f.id NOT IN ({placeholders}) "
             params.extend(list(exclude_ids))
-        params.append(limit)
 
         query_vec = f"""
             SELECT fv.fact_id, fv.distance
             FROM facts_vec fv
             JOIN facts f ON fv.fact_id = f.id
             WHERE fv.embedding MATCH ?
+              AND k = ?
               AND f.scope = ?
               AND f.valid_to IS NULL
               AND f.superseded_by IS NULL
               {exclude_clause}
-            ORDER BY fv.distance LIMIT ?
+            ORDER BY fv.distance
         """
         with timed("write.find_candidates"):
             try:
@@ -209,6 +209,18 @@ class FactWriter:
 
         return WriteResult(fact_id=new_fact.id, superseded_ids=superseded_ids, status="created")
 
+    def invalidate_fact(self, fact_id: str, valid_to: str, superseded_by: str | None = None) -> None:
+        """
+        Invalidates a fact by setting its valid_to timestamp and optionally its superseded_by FK.
+        Also removes it from the FTS index so it no longer appears in keyword searches.
+        """
+        self.db.execute(
+            "UPDATE facts SET valid_to = ?, superseded_by = ? WHERE id = ?",
+            [valid_to, superseded_by, fact_id],
+        )
+        self.db.execute("DELETE FROM facts_fts WHERE fact_id = ?", [fact_id])
+
+
     def _commit_fact_transaction(
         self,
         new_fact: Fact,
@@ -252,13 +264,9 @@ class FactWriter:
 
                 for candidate, relationship in relationships:
                     if relationship == Relationship.SUPERSEDES:
-                        self.db.execute(
-                            "UPDATE facts SET valid_to = ?, superseded_by = ? WHERE id = ?",
-                            [valid_from, new_fact.id, candidate.id],
-                        )
-                        self.db.execute("DELETE FROM facts_fts WHERE fact_id = ?", [candidate.id])
+                        self.invalidate_fact(candidate.id, valid_from, new_fact.id)
                         superseded_ids.append(candidate.id)
-                self.db.execute("COMMIT")
+                self.db.commit()
                 logger.info(
                     "Fact %s created, superseded %d facts", new_fact.id, len(superseded_ids)
                 )
