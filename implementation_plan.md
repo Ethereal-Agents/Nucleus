@@ -542,6 +542,39 @@ Respond ONLY with valid JSON:
 > [!TIP]
 > **Optimization:** Before calling the LLM, pre-filter with cosine similarity threshold (≥ 0.75). If no existing fact is semantically close, skip the LLM call entirely. This eliminates ~80% of LLM calls for independent facts.
 
+### 4.5 Two-Tier Supersession Strategy
+
+There are two distinct code paths through the supersession engine, depending on whether the caller already knows which fact is being replaced:
+
+| Tier | Trigger | LLM call? | Use case |
+|---|---|---|---|
+| **Tier 1 — Hint-guided** | Caller provides `supersedes_hint` (a `fact_id`) | ❌ No LLM | End-of-run extraction (§13): the extraction LLM already compared the new fact against `<prior_facts>` and identified the contradiction. This is the common case for the extraction pipeline. |
+| **Tier 2 — LLM-detected** | No hint provided | ✅ LLM for each candidate | Live agent writes via `memory_write` without prior context, or for any similar candidates not covered by the hint. |
+
+**Why this matters:** End-of-run extraction (§13) already supplies `prior_facts` to the extraction LLM, which returns `supersedes_hint` pointing to the old fact's `id`. At that point, we know exactly which fact is obsolete — re-running the Haiku contradiction detector on it wastes a round-trip (~$0.0006). The hint bypasses that call entirely.
+
+**Safe fallback rule:** The hint is always validated before use. If the hinted fact is already superseded or doesn't exist (e.g., stale transcript), the hint is silently dropped and Tier 2 runs normally. No crash, no silent data corruption.
+
+```
+write_fact(content, scope, supersedes_hint="fact_abc")
+    │
+    ├─ Validate hint: fact_abc exists AND valid_to IS NULL AND superseded_by IS NULL?
+    │       Yes → remove from candidate pool; schedule for direct invalidation (Tier 1)
+    │       No  → log warning, ignore hint, proceed to Tier 2 only
+    │
+    ├─ embed new fact
+    ├─ find_similar_valid_facts (excluding hint if validated)
+    ├─ LLM detect_contradiction on remaining candidates (Tier 2)
+    │
+    └─ Atomic transaction:
+            INSERT new fact, embedding, FTS
+            Tier 1: invalidate hint_fact directly
+            Tier 2: invalidate each LLM-confirmed SUPERSEDES
+```
+
+> [!NOTE]
+> Both tiers write to the DB in the **same atomic transaction**. The ordering constraint still holds: the new fact must be inserted before any `superseded_by` FK update.
+
 ---
 
 ## 5. MCP Server (FastMCP)
@@ -568,6 +601,7 @@ def memory_write(
     valid_from: str | None = None,
     fact_type: str = "insight",
     confidence: float = 1.0,             # 0.0–1.0; use <1.0 for uncertain/inferred facts
+    supersedes_hint: str | None = None,  # fact_id the caller already knows is being replaced
 ) -> WriteResult:
     """
     Write a new fact to the shared memory hub.
@@ -581,6 +615,11 @@ def memory_write(
         valid_from: ISO-8601 timestamp when this became true. Defaults to now.
         fact_type: One of 'insight', 'convention', 'architecture', 'gotcha', 'dependency'.
         confidence: Certainty of this fact (default 1.0). Use lower values for inferred facts.
+        supersedes_hint: Optional fact_id from a prior memory_search result that this fact
+            contradicts or replaces. When provided, the backend skips the LLM contradiction
+            detector for that specific pair and invalidates the hinted fact directly.
+            The LLM detector still runs on other semantically-similar candidates.
+            Obtained from the `id` field in the [MEMORY HUB] context block (§14.2).
     """
     ...
 
@@ -821,12 +860,17 @@ def embed(text: str, prefix: str = "search_document: ") -> bytes:
 | Fact writer | `writer.py` | ~120 | Embed, find candidates, call contradiction detector, store |
 | Contradiction detector | `supersession.py` | ~100 | LLM prompt from §4.3, parse response, batch optimization |
 
-**Supersession flow:**
+**Supersession flow (two-tier strategy — see §4.5):**
 ```python
 import hashlib
 
 async def write_fact(
-    content: str, scope: str, valid_from: str, run_id: str, confidence: float = 1.0
+    content: str,
+    scope: str,
+    valid_from: str,
+    run_id: str,
+    confidence: float = 1.0,
+    supersedes_hint: str | None = None,   # fast-path: skip LLM for this known pair
 ) -> WriteResult:
     # 1. Content-hash idempotency check (avoids duplicate facts from re-extraction)
     content_hash = hashlib.sha256(f"{content}|{scope}".encode()).hexdigest()
@@ -839,17 +883,34 @@ async def write_fact(
     # 2. Embed the new fact
     embedding = embed(content, prefix="search_document: ")
 
-    # 3. Find similar existing facts (same scope, currently valid)
-    candidates = find_similar_valid_facts(embedding, scope, threshold=0.75, limit=5)
+    # 3. Validate the hint (guard: hinted fact must exist and be currently valid)
+    hint_fact: Fact | None = None
+    if supersedes_hint:
+        row = db.execute(
+            "SELECT * FROM facts WHERE id = ? AND valid_to IS NULL AND superseded_by IS NULL",
+            [supersedes_hint],
+        ).fetchone()
+        if row:
+            hint_fact = Fact(**dict(row))
+        else:
+            # Hint points to an already-invalidated or non-existent fact — ignore silently.
+            # This is safe: the LLM path below will still catch any real contradiction.
+            logger.warning("supersedes_hint %s is invalid or already superseded; ignoring.", supersedes_hint)
 
-    # 4. Detect contradictions via LLM
+    # 4. Find similar existing facts (same scope), EXCLUDING the hinted fact (already resolved)
+    candidates = find_similar_valid_facts(
+        embedding, scope, threshold=0.75, limit=5,
+        exclude_ids={supersedes_hint} if hint_fact else set(),
+    )
+
+    # 5. Detect contradictions via LLM for remaining candidates
     #    OUTSIDE the transaction — LLM calls must not hold DB locks (slow + unbounded latency)
     relationships = []
     for candidate in candidates:
         relationship = await detect_contradiction(candidate, content)
         relationships.append((candidate, relationship))
 
-    # 5. ALL DB mutations in ONE atomic transaction
+    # 6. ALL DB mutations in ONE atomic transaction
     #    New fact is inserted FIRST so the FK reference (superseded_by → new_fact.id)
     #    is valid when old facts are invalidated. Violating this order causes FK errors.
     superseded_ids = []
@@ -858,6 +919,17 @@ async def write_fact(
         insert_embedding(new_fact.id, embedding)
         insert_fts(new_fact.id, content, scope)
 
+        # Fast-path supersession: hinted fact bypassed the LLM entirely
+        if hint_fact:
+            invalidate_fact(
+                hint_fact.id,
+                superseded_by=new_fact.id,
+                valid_to=valid_from,
+            )
+            delete_fts(hint_fact.id)
+            superseded_ids.append(hint_fact.id)
+
+        # LLM-detected supersessions for remaining candidates
         for candidate, relationship in relationships:
             if relationship == Relationship.SUPERSEDES:
                 invalidate_fact(
@@ -1062,9 +1134,21 @@ Return a JSON array. Each object must have:
 - `fact_type` (string): Exactly one of: "insight", "convention", "architecture", "gotcha", "dependency".
 - `valid_from` (string): ISO-8601 timestamp of payload ingestion (use {run_finished_at}).
 - `supersedes_hint` (string | null): `id` from <prior_facts> that this fact contradicts
-  or makes incomplete. See supersession rules below.
+  or makes incomplete. See supersession rules below. When set, the backend skips its own
+  LLM contradiction check for that specific pair and invalidates the old fact directly
+  (Tier 1 fast-path — see §4.5). Leave null if no prior fact is being replaced.
 
 Output ONLY valid JSON. If no durable facts were found, return [].
+
+The Pydantic model that parses each array item:
+```python
+class FactDraft(BaseModel):
+    content: str
+    scope: str
+    fact_type: str = "insight"
+    valid_from: str                  # ISO-8601; set to run_finished_at
+    supersedes_hint: str | None = None  # fact.id from <prior_facts>, or null
+```
 
 ### Supersession Rules (for supersedes_hint):
 Apply the UNLEARN TEST: "Would a future agent need to unlearn the prior fact to work correctly?"
