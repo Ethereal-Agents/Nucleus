@@ -64,3 +64,9 @@ class SearchResult(BaseModel):
     fact: Fact
     relevance_score: float
     retrieval_method: str
+
+
+class WriteResult(BaseModel):
+    fact_id: str
+    superseded_ids: list[str]
+    status: str

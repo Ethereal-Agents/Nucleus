@@ -66,9 +66,8 @@ CONFIDENCE_DECAY_FLOOR = float(os.getenv("SWARM_MEMORY_CONFIDENCE_DECAY_FLOOR", 
 # Default: 7200 = 2 hours.
 SESSION_TTL_SECONDS = int(os.getenv("SWARM_MEMORY_SESSION_TTL", "7200"))
 
-# ── LLM (OpenRouter — used by supersession detector, Phase 3) ───────────────
+# ── LLM (LiteLLM) ────────────────────────────────────────────────────────────
 
-# These are used by ingestion/supersession.py (Person A, Phase 3).
-# Kept here so config is the single source of truth for the whole system.
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3-haiku")
+# Used by the core LLMService (e.g. for supersession detection).
+# Since we use LiteLLM, you can prefix with provider (e.g. openrouter/..., openai/...)
+LLM_MODEL = os.getenv("SWARM_MEMORY_LLM_MODEL", "openrouter/anthropic/claude-3.5-sonnet")
