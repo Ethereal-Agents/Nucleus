@@ -189,6 +189,25 @@ class FactWriter:
             content_hash=content_hash,
         )
 
+        superseded_ids = self._commit_fact_transaction(
+            new_fact=new_fact,
+            embedding=embedding,
+            relationships=relationships,
+            valid_from=valid_from,
+        )
+
+        return WriteResult(fact_id=new_fact.id, superseded_ids=superseded_ids, status="created")
+
+    def _commit_fact_transaction(
+        self,
+        new_fact: Fact,
+        embedding: bytes,
+        relationships: list[tuple[Fact, Relationship]],
+        valid_from: str,
+    ) -> list[str]:
+        """
+        Executes the atomic database transaction to insert a new fact and invalidate any superseded facts.
+        """
         superseded_ids = []
 
         with timed("write.transaction"):
@@ -237,4 +256,4 @@ class FactWriter:
                 logger.error("Transaction rolled back due to error: %s", e)
                 raise e
 
-        return WriteResult(fact_id=new_fact.id, superseded_ids=superseded_ids, status="created")
+        return superseded_ids
