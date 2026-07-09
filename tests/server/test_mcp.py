@@ -5,7 +5,7 @@ import pytest
 # Must set before importing mcp so that db initializes in memory
 os.environ["SWARM_MEMORY_DB_PATH"] = ":memory:"
 
-from swarm_memory.server.mcp import (  # noqa: E402
+from swarm_memory.server.mcp_server import (  # noqa: E402
     memory_begin_run,
     memory_end_run,
     memory_invalidate,
@@ -24,7 +24,7 @@ def reset_mcp_state():
     so without this fixture every test shares the same DB and state leaks between them.
     This fixture replaces each singleton with a fresh instance before every test run.
     """
-    import swarm_memory.server.mcp as mcp_module
+    import swarm_memory.server.mcp_server as mcp_module
     from swarm_memory.core.embeddings import EmbeddingModel
     from swarm_memory.ingestion.supersession import ContradictionDetector
     from swarm_memory.ingestion.writer import FactWriter

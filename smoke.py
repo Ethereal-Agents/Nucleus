@@ -5,7 +5,7 @@ import sys
 # Ensure we use a test database for the smoke test
 os.environ["SWARM_MEMORY_DB_PATH"] = "smoke_test.db"
 
-from swarm_memory.server.mcp import (
+from swarm_memory.server.mcp_server import (
     memory_begin_run,
     memory_search,
     memory_write,

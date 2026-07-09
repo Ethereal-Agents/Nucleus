@@ -8,12 +8,12 @@ os.environ["SWARM_MEMORY_DB_PATH"] = ":memory:"
 
 from unittest.mock import AsyncMock, MagicMock
 
-import swarm_memory.server.mcp as mcp_module
+import swarm_memory.server.mcp_server as mcp_module
 from swarm_memory.core.embeddings import EmbeddingModel
 from swarm_memory.ingestion.supersession import ContradictionDetector
 from swarm_memory.ingestion.writer import FactWriter
 from swarm_memory.retrieval.reader import FactReader
-from swarm_memory.server.mcp import (
+from swarm_memory.server.mcp_server import (
     memory_begin_run,
     memory_search,
     memory_write,
