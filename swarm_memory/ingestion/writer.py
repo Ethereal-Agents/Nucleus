@@ -19,7 +19,6 @@ Implements the full write path that powers the memory_write tool call:
 See implementation_plan.md §4, §7 for the full design rationale.
 """
 
-import contextlib
 import hashlib
 import logging
 import sqlite3
@@ -137,10 +136,8 @@ class FactWriter:
         if not valid_from:
             valid_from = datetime.now(UTC).isoformat()
         else:
-            # Normalize to valid format if provided (e.g., timezone aware)
-            # Ensure it's parseable
-            with contextlib.suppress(ValueError):
-                datetime.fromisoformat(valid_from.replace("Z", "+00:00"))
+            # Validate eagerly — raises ValueError with a clear message if malformed
+            datetime.fromisoformat(valid_from.replace("Z", "+00:00"))
 
         with timed("write.duplicate_check"):
             content_hash = hashlib.sha256(f"{content}|{scope}".encode()).hexdigest()

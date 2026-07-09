@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.0",
     "uuid7>=0.1.0",
     "litellm>=1.91.0",
+    "einops>=0.8",
 ]
 
 [project.optional-dependencies]
