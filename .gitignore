@@ -64,3 +64,6 @@ coverage.xml
 .Trashes
 ehthumbs.db
 Thumbs.db
+.idea/
+swarm_memory.db*
+.pr_body.md
