@@ -82,3 +82,60 @@ async def test_mcp_lifecycle():
     assert len(runs) >= 1
     assert runs[0]["id"] == run_id
     assert runs[0]["summary"] == "Completed auth testing"
+
+
+@pytest.mark.asyncio
+async def test_memory_end_run_fact_extraction():
+    import json
+
+    # 1. Begin a new run
+    begin_res = memory_begin_run(repo="testrepo", agent_id="extractor")
+    run_id = begin_res["run_id"]
+
+    # 2. End run with a JSON array summary
+    summary_json = json.dumps(
+        [
+            {
+                "content": "We migrated from PostgreSQL to MySQL.",
+                "scope": "testrepo/infra/db",
+                "fact_type": "architecture",
+            },
+            {
+                "content": "Do not use the old user_id field, use uuid instead.",
+                "scope": "testrepo/src/users",
+                "fact_type": "gotcha",
+            },
+        ]
+    )
+
+    end_res = await memory_end_run(run_id=run_id, summary=summary_json)
+    assert end_res["status"] == "completed"
+
+    # 3. Search to verify both facts were written successfully
+    search_res1 = memory_search(
+        query="PostgreSQL", scope="testrepo/infra/db", run_id="some_new_run", top_k=5
+    )
+    assert "We migrated from PostgreSQL to MySQL." in search_res1
+
+    search_res2 = memory_search(
+        query="user_id", scope="testrepo/src/users", run_id="some_new_run2", top_k=5
+    )
+    assert "Do not use the old user_id field" in search_res2
+    assert "⚠" in search_res2  # Because it's a gotcha
+
+
+@pytest.mark.asyncio
+async def test_memory_end_run_malformed_json_graceful():
+    begin_res = memory_begin_run(repo="testrepo", agent_id="bad_extractor")
+    run_id = begin_res["run_id"]
+
+    # Provide a malformed JSON that cannot be repaired
+    malformed_summary = "This is not json, it's just a string."
+
+    # Should not raise an exception
+    end_res = await memory_end_run(run_id=run_id, summary=malformed_summary)
+    assert end_res["status"] == "completed"
+
+    runs = memory_list_runs(repo="testrepo", limit=1)
+    assert runs[0]["id"] == run_id
+    assert runs[0]["summary"] == malformed_summary
