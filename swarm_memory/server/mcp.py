@@ -11,6 +11,7 @@ from fastmcp import FastMCP
 
 from swarm_memory.core.embeddings import EmbeddingModel
 from swarm_memory.core.models import uuid7
+from swarm_memory.ingestion.extraction import parse_extraction_output
 from swarm_memory.ingestion.supersession import ContradictionDetector
 from swarm_memory.ingestion.writer import FactWriter
 from swarm_memory.retrieval.reader import FactReader
@@ -199,7 +200,7 @@ def memory_begin_run(
 
 
 @mcp.tool()
-def memory_end_run(
+async def memory_end_run(
     run_id: str,
     summary: str = "[]",
     input_tokens: int = 0,
@@ -216,6 +217,7 @@ def memory_end_run(
     - Architecture decisions, project conventions, hidden gotchas, core dependencies.
 
     IGNORE: transient debugging steps, syntax errors you fixed, failed attempts.
+    CRITICAL: Do NOT include any facts that you already saved manually using `memory_write` during this run.
 
     Output format for `summary`:
     [
@@ -244,6 +246,17 @@ def memory_end_run(
         [summary, input_tokens, output_tokens, total_cost_usd, finished_at, run_id],
     )
     db.commit()
+
+    drafts = parse_extraction_output(summary, run_id)
+    for draft in drafts:
+        await writer.write_fact(
+            content=draft.content,
+            scope=draft.scope,
+            run_id=run_id,
+            fact_type=draft.fact_type,
+            supersedes_hint=draft.supersedes_hint,
+        )
+
     session_manager.end_session(run_id)
     return {"run_id": run_id, "status": "completed"}
 

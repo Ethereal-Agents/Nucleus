@@ -74,7 +74,7 @@ async def test_mcp_lifecycle():
     assert "no relevant facts found" in search_res3
 
     # 8. End run
-    end_res = memory_end_run(run_id=run_id, summary="Completed auth testing")
+    end_res = await memory_end_run(run_id=run_id, summary="Completed auth testing")
     assert end_res["status"] == "completed"
 
     # 9. List runs
