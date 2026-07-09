@@ -221,7 +221,9 @@ def test_facts_vec_virtual_table_created(db_conn):
 
         assert "facts_vec" in tables, "sqlite-vec available but facts_vec table not created"
     except ImportError:
-        pytest.skip("sqlite-vec not installed — graceful degradation path, skipping vec table check")
+        pytest.skip(
+            "sqlite-vec not installed — graceful degradation path, skipping vec table check"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

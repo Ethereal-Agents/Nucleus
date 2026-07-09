@@ -118,7 +118,7 @@ async def test_detect_contradiction_llm_exception(mock_candidate):
 async def test_detect_contradictions_empty_list():
     mock_llm = MagicMock(spec=LLMService)
     detector = ContradictionDetector(llm_service=mock_llm)
-    
+
     results = await detector.detect_contradictions([], "content", "scope", "insight")
     assert len(results) == 0
     # generate_json_async should not have been called
@@ -131,13 +131,11 @@ async def test_prompt_contains_fact_content(mock_candidate):
     mock_llm.generate_json_async = AsyncMock(return_value={"relationship": "INDEPENDENT"})
 
     detector = ContradictionDetector(llm_service=mock_llm)
-    await detector.detect_contradiction(
-        mock_candidate, "new session auth", "auth", "insight"
-    )
+    await detector.detect_contradiction(mock_candidate, "new session auth", "auth", "insight")
 
     # Check that prompt contains the right fields
     call_kwargs = mock_llm.generate_json_async.call_args.kwargs
     prompt = call_kwargs["user_prompt"]
     assert "auth uses JWT" in prompt
     assert "new session auth" in prompt
-    assert "auth" in prompt # scope
+    assert "auth" in prompt  # scope

@@ -245,20 +245,42 @@ async def test_write_fact_invalid_date(db, mock_embedder, mock_detector):
 @pytest.mark.asyncio
 async def test_supersession_chain_a_b_c(db, mock_embedder, mock_detector):
     writer = FactWriter(db, mock_embedder, mock_detector)
-    
+
     # Write A
     res_a = await writer.write_fact(content="A", scope="scope", run_id="run_1")
-    
+
     # Write B, superseding A
     mock_detector.detect_contradictions = AsyncMock(
-        return_value=[(Fact(id=res_a.fact_id, content="A", scope="scope", valid_from=datetime.now(UTC), source_run_id="run_1"), Relationship.SUPERSEDES)]
+        return_value=[
+            (
+                Fact(
+                    id=res_a.fact_id,
+                    content="A",
+                    scope="scope",
+                    valid_from=datetime.now(UTC),
+                    source_run_id="run_1",
+                ),
+                Relationship.SUPERSEDES,
+            )
+        ]
     )
     res_b = await writer.write_fact(content="B", scope="scope", run_id="run_1")
     assert res_a.fact_id in res_b.superseded_ids
 
     # Write C, superseding B
     mock_detector.detect_contradictions = AsyncMock(
-        return_value=[(Fact(id=res_b.fact_id, content="B", scope="scope", valid_from=datetime.now(UTC), source_run_id="run_1"), Relationship.SUPERSEDES)]
+        return_value=[
+            (
+                Fact(
+                    id=res_b.fact_id,
+                    content="B",
+                    scope="scope",
+                    valid_from=datetime.now(UTC),
+                    source_run_id="run_1",
+                ),
+                Relationship.SUPERSEDES,
+            )
+        ]
     )
     res_c = await writer.write_fact(content="C", scope="scope", run_id="run_1")
     assert res_b.fact_id in res_c.superseded_ids
@@ -277,7 +299,7 @@ async def test_supersession_chain_a_b_c(db, mock_embedder, mock_detector):
 async def test_hint_valid(db, mock_embedder, mock_detector):
     writer = FactWriter(db, mock_embedder, mock_detector)
     res1 = await writer.write_fact(content="Old", scope="scope", run_id="run_1")
-    
+
     # Write with supersedes_hint, should bypass detector mock logic for that fact
     res2 = await writer.write_fact(
         content="New", scope="scope", run_id="run_1", supersedes_hint=res1.fact_id
@@ -303,10 +325,10 @@ async def test_hint_invalid(db, mock_embedder, mock_detector):
 async def test_hint_already_superseded(db, mock_embedder, mock_detector):
     writer = FactWriter(db, mock_embedder, mock_detector)
     res1 = await writer.write_fact(content="Old", scope="scope", run_id="run_1")
-    res2 = await writer.write_fact(
+    await writer.write_fact(
         content="New", scope="scope", run_id="run_1", supersedes_hint=res1.fact_id
     )
-    
+
     # Try to use res1.fact_id as a hint again
     res3 = await writer.write_fact(
         content="Newer", scope="scope", run_id="run_1", supersedes_hint=res1.fact_id
@@ -322,11 +344,11 @@ async def test_fts_not_deleted_on_supersession(db, mock_embedder, mock_detector)
     # This test asserts current behavior.
     writer = FactWriter(db, mock_embedder, mock_detector)
     res1 = await writer.write_fact(content="Old", scope="scope", run_id="run_1")
-    
-    res2 = await writer.write_fact(
+
+    await writer.write_fact(
         content="New", scope="scope", run_id="run_1", supersedes_hint=res1.fact_id
     )
-    
+
     # Check FTS
     fts_row = db.execute("SELECT * FROM facts_fts WHERE fact_id = ?", [res1.fact_id]).fetchone()
     assert fts_row is not None, "FTS entry should still exist (BUG-3 behavior)"

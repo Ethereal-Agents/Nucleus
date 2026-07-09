@@ -423,7 +423,6 @@ class FactReader:
                 WHERE id IN ({placeholders})
                   AND valid_from <= ?
                   AND (valid_to IS NULL OR valid_to > ?)
-                  AND superseded_by IS NULL
                 """,
                 [*fact_ids, as_of, as_of],
             ).fetchall()
