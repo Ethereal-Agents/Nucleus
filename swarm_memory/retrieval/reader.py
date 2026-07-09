@@ -28,15 +28,13 @@ import contextlib
 import logging
 import re
 import sqlite3
-import time
 from collections import defaultdict
-from collections.abc import Generator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from swarm_memory.core import config
+from swarm_memory.core.embeddings import EmbeddingModel
 from swarm_memory.core.models import Fact, FactType, SearchResult
-from swarm_memory.retrieval.embeddings import EmbeddingModel
+from swarm_memory.core.utils import timed
 
 logger = logging.getLogger(__name__)
 
@@ -82,37 +80,6 @@ _STOP_WORDS: frozenset[str] = frozenset(
         "its",
     }
 )
-
-# ── Session deduplication state (§14.3) ─────────────────────────────────────
-# Module-level dict so it is shared across all FactReader instances within the
-# same server process — the key property for a centralized SSE server.
-#
-# Structure: run_id → (set of fact IDs already shown, last-access unix timestamp)
-_session_seen: dict[str, tuple[set[str], float]] = {}
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Timing utility
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-@contextmanager
-def timed(label: str) -> Generator[None, None, None]:
-    """
-    Context manager that logs the wall-clock duration of a code block.
-
-    Shared utility — also importable by Person A's ingestion/writer.py.
-
-    Example:
-        with timed("dense_search"):
-            results = db.execute(...)
-    """
-    start = time.perf_counter()
-    try:
-        yield
-    finally:
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.debug("⏱  %s: %.1f ms", label, elapsed_ms)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -247,86 +214,6 @@ def apply_gotcha_priority(results: list[SearchResult]) -> list[SearchResult]:
     return gotchas + others
 
 
-def format_results_for_agent(results: list[SearchResult], scope: str) -> str:
-    """
-    Format search results as a human/LLM-readable context block.
-
-    Agents are LLMs. Raw JSON with RRF scores is noise to them. This function
-    returns a structured plain-text block that agents can inject directly into
-    their reasoning context.
-
-    Key formatting rules (§14.2):
-    - Gotchas get a ⚠ prefix and always appear first (see apply_gotcha_priority).
-    - fact_id and known-since date are included so agents can call
-      memory_invalidate() without a second lookup.
-    - Numeric scores (RRF, confidence, distance) are stripped — meaningless to LLMs.
-    - Empty results still return a message (never silently empty).
-
-    Args:
-        results: Ordered list of SearchResult objects to format.
-        scope:   The scope that was queried (used in the header).
-
-    Returns:
-        A formatted multi-line string, ready to inject into agent context.
-    """
-    if not results:
-        return f"[MEMORY HUB — no relevant facts found for scope: {scope}]"
-
-    lines = [f"[MEMORY HUB — {len(results)} fact(s) for {scope}]", ""]
-
-    for result in results:
-        fact = result.fact
-        prefix = "⚠ " if fact.fact_type == FactType.GOTCHA else ""
-        lines.append(f"{prefix}[{fact.fact_type.value}] {fact.scope}")
-        lines.append(fact.content)
-        # known_since is the valid_from date (when the fact became true)
-        known_since = fact.valid_from.strftime("%Y-%m-%d") if fact.valid_from else "unknown"
-        lines.append(f"→ id: {fact.id}  |  known since: {known_since}")
-        lines.append("")
-
-    lines.append('If any fact above is outdated, call: memory_invalidate(fact_id, reason="...")')
-    return "\n".join(lines)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Session deduplication (module-level, shared across all FactReader instances)
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def _evict_stale_sessions() -> None:
-    """
-    Remove sessions that have been idle for longer than SESSION_TTL_SECONDS.
-
-    This is a safety net for agents that crash without calling memory_end_run().
-    Without eviction, orphaned sessions would leak memory in the server process.
-
-    Called at the top of every search_with_dedup() — cheap O(sessions) scan
-    since the number of concurrent agent sessions is expected to be small.
-    """
-    cutoff = time.time() - config.SESSION_TTL_SECONDS
-    stale_ids = [
-        run_id for run_id, (_seen_ids, last_access) in _session_seen.items() if last_access < cutoff
-    ]
-    for run_id in stale_ids:
-        del _session_seen[run_id]
-        logger.debug("Evicted stale session: %s", run_id)
-
-
-def end_session(run_id: str) -> None:
-    """
-    Explicitly evict a session from the deduplication store.
-
-    Called by the MCP server's memory_end_run() tool when an agent finishes
-    its run cleanly. After this call, the agent's seen-fact-IDs set is cleared,
-    so if the same agent starts a new run, it will receive fresh results.
-
-    Args:
-        run_id: The run ID returned by memory_begin_run().
-    """
-    _session_seen.pop(run_id, None)
-    logger.debug("Session ended and evicted: %s", run_id)
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # FactReader — the main retrieval engine
 # ═══════════════════════════════════════════════════════════════════════════
@@ -406,12 +293,12 @@ class FactReader:
                     FROM facts_vec fv
                     JOIN facts f ON fv.fact_id = f.id
                     WHERE fv.embedding MATCH ?
+                      AND k = ?
                       AND f.scope IN ({placeholders})
                       {time_filter}
                     ORDER BY fv.distance
-                    LIMIT ?
                     """,
-                    [query_vec, *scope_paths, *time_params, top_n],
+                    [query_vec, top_n, *scope_paths, *time_params],
                 ).fetchall()
             else:
                 rows = self._conn.execute(
@@ -420,11 +307,11 @@ class FactReader:
                     FROM facts_vec fv
                     JOIN facts f ON fv.fact_id = f.id
                     WHERE fv.embedding MATCH ?
+                      AND k = ?
                       {time_filter}
                     ORDER BY fv.distance
-                    LIMIT ?
                     """,
-                    [query_vec, *time_params, top_n],
+                    [query_vec, top_n, *time_params],
                 ).fetchall()
 
         # Lower distance = more similar; convert to (id, score) keeping distance
@@ -695,60 +582,3 @@ class FactReader:
 
         # Step 11: Trim
         return results[:top_k]
-
-    def search_with_dedup(
-        self,
-        query: str,
-        scope: str | None,
-        run_id: str,
-        top_k: int = 5,
-        as_of: str | None = None,
-        fact_type: str | None = None,
-    ) -> list[SearchResult]:
-        """
-        Search with in-session deduplication.
-
-        Agents query multiple times per run. Without dedup, the same gotcha
-        would appear in every response, wasting tokens and LLM attention.
-        This method tracks which fact IDs have been shown for a given run_id
-        and filters them out of subsequent queries.
-
-        Over-fetches by len(seen) to compensate for filtered-out results,
-        ensuring top_k fresh results are always returned when available.
-
-        Args:
-            query:     Natural language query.
-            scope:     Scope filter (with hierarchy resolution).
-            run_id:    The agent's current run ID (from memory_begin_run).
-            top_k:     Number of fresh (not-yet-seen) results to return.
-            as_of:     Optional point-in-time filter.
-            fact_type: Optional fact type filter.
-
-        Returns:
-            List of SearchResult objects the agent has NOT yet seen this session.
-        """
-        # Evict stale sessions first (safety net for crashed agents)
-        _evict_stale_sessions()
-
-        # Get or create the session state for this run_id
-        seen_ids, _ = _session_seen.get(run_id, (set(), 0.0))
-
-        # Over-fetch: request extra results to cover already-seen IDs
-        fetch_k = top_k + len(seen_ids)
-
-        candidates = self.search(
-            query=query,
-            scope=scope,
-            as_of=as_of,
-            top_k=fetch_k,
-            fact_type=fact_type,
-        )
-
-        # Filter to only fresh (not-yet-seen) results
-        fresh = [r for r in candidates if r.fact.id not in seen_ids][:top_k]
-
-        # Update session state with newly shown fact IDs
-        new_seen = seen_ids | {r.fact.id for r in fresh}
-        _session_seen[run_id] = (new_seen, time.time())
-
-        return fresh
