@@ -214,13 +214,11 @@ class FactWriter:
     ) -> None:
         """
         Invalidates a fact by setting its valid_to timestamp and optionally its superseded_by FK.
-        Also removes it from the FTS index so it no longer appears in keyword searches.
         """
         self.db.execute(
             "UPDATE facts SET valid_to = ?, superseded_by = ? WHERE id = ?",
             [valid_to, superseded_by, fact_id],
         )
-        self.db.execute("DELETE FROM facts_fts WHERE fact_id = ?", [fact_id])
 
     def _commit_fact_transaction(
         self,
