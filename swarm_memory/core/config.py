@@ -12,6 +12,10 @@ Usage:
 
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # ── Database ────────────────────────────────────────────────────────────────
 
 # Path to the SQLite database file.

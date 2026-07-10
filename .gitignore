@@ -69,3 +69,8 @@ Thumbs.db
 .idea/
 swarm_memory.db*
 .pr_body.md
+
+# Environments
+.env
+.env.local
+.env.*
