@@ -10,6 +10,12 @@ dependencies = [
     "pydantic>=2.0",
     "uuid7>=0.1.0",
     "litellm>=1.91.0",
+    "ipykernel>=7.3.0",
+    "datasets>=5.0.0",
+    "pandas>=3.0.3",
+    "networkx>=3.6.1",
+    "matplotlib>=3.11.0",
+    "seaborn>=0.13.2",
 ]
 
 [project.optional-dependencies]
