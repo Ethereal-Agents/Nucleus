@@ -98,3 +98,44 @@ async def test_detect_contradictions_batch(mock_candidate):
     assert results[0][1] == Relationship.SUPERSEDES
     assert results[1][0] == candidate_2
     assert results[1][1] == Relationship.REFINES
+
+
+@pytest.mark.asyncio
+async def test_detect_contradiction_llm_exception(mock_candidate):
+    # If the LLM call raises an exception, it should propagate (or handle gracefully if we decide).
+    # Current behavior is exception propagates since there's no try/except.
+    mock_llm = MagicMock(spec=LLMService)
+    mock_llm.generate_json_async = AsyncMock(side_effect=Exception("API Timeout"))
+
+    detector = ContradictionDetector(llm_service=mock_llm)
+    with pytest.raises(Exception, match="API Timeout"):
+        await detector.detect_contradiction(
+            mock_candidate, "auth uses session tokens", "auth", "insight"
+        )
+
+
+@pytest.mark.asyncio
+async def test_detect_contradictions_empty_list():
+    mock_llm = MagicMock(spec=LLMService)
+    detector = ContradictionDetector(llm_service=mock_llm)
+
+    results = await detector.detect_contradictions([], "content", "scope", "insight")
+    assert len(results) == 0
+    # generate_json_async should not have been called
+    mock_llm.generate_json_async.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prompt_contains_fact_content(mock_candidate):
+    mock_llm = MagicMock(spec=LLMService)
+    mock_llm.generate_json_async = AsyncMock(return_value={"relationship": "INDEPENDENT"})
+
+    detector = ContradictionDetector(llm_service=mock_llm)
+    await detector.detect_contradiction(mock_candidate, "new session auth", "auth", "insight")
+
+    # Check that prompt contains the right fields
+    call_kwargs = mock_llm.generate_json_async.call_args.kwargs
+    prompt = call_kwargs["user_prompt"]
+    assert "auth uses JWT" in prompt
+    assert "new session auth" in prompt
+    assert "auth" in prompt  # scope

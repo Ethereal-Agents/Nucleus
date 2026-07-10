@@ -5,7 +5,7 @@ import pytest
 # Must set before importing mcp so that db initializes in memory
 os.environ["SWARM_MEMORY_DB_PATH"] = ":memory:"
 
-from swarm_memory.server.mcp import (
+from swarm_memory.server.mcp_server import (  # noqa: E402
     memory_begin_run,
     memory_end_run,
     memory_invalidate,
@@ -13,6 +13,34 @@ from swarm_memory.server.mcp import (
     memory_search,
     memory_write,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_mcp_state():
+    """
+    Reinitialise the in-memory DB and all module-level singletons before each test.
+
+    mcp.py initialises db/writer/reader/session_manager at import time (module scope),
+    so without this fixture every test shares the same DB and state leaks between them.
+    This fixture replaces each singleton with a fresh instance before every test run.
+    """
+    import swarm_memory.server.mcp_server as mcp_module
+    from swarm_memory.core.embeddings import EmbeddingModel
+    from swarm_memory.ingestion.supersession import ContradictionDetector
+    from swarm_memory.ingestion.writer import FactWriter
+    from swarm_memory.retrieval.reader import FactReader
+    from swarm_memory.server.session import SessionManager
+    from swarm_memory.store.db import get_initialized_db
+
+    mcp_module.db = get_initialized_db(":memory:")
+    mcp_module.embedder = EmbeddingModel()
+    mcp_module.detector = ContradictionDetector()
+    mcp_module.writer = FactWriter(
+        db=mcp_module.db, embedder=mcp_module.embedder, detector=mcp_module.detector
+    )
+    mcp_module.reader = FactReader(conn=mcp_module.db, embedder=mcp_module.embedder)
+    mcp_module.session_manager = SessionManager()
+    yield
 
 
 @pytest.mark.asyncio
