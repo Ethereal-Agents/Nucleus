@@ -74,3 +74,4 @@ swarm_memory.db*
 .env
 .env.local
 .env.*
+!.env.example
