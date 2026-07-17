@@ -1,3 +1,8 @@
+from swarm_memory.store.db import get_db, init_db
+import sqlite3
+import pytest
+from unittest import mock
+from unittest import mock
 """
 tests/store/test_db.py
 
@@ -339,3 +344,91 @@ def test_supersession_update_query(db_mem):
     new_row = db_mem.execute("SELECT * FROM facts WHERE id = 'new'").fetchone()
     assert new_row["valid_to"] is None
     assert new_row["superseded_by"] is None
+
+def test_get_db_creates_file(tmp_path):
+    db_file = tmp_path / "new_db.sqlite"
+    assert not db_file.exists()
+    conn, vec = get_db(str(db_file))
+    conn.close()
+    assert db_file.exists()
+
+def test_get_db_returns_vec_loaded_flag():
+    conn, vec = get_db(":memory:")
+    assert isinstance(vec, bool)
+    conn.close()
+
+@mock.patch.dict("sys.modules", {"sqlite_vec": None})
+def test_get_db_vec_not_available(capsys):
+    conn, vec_loaded = get_db(":memory:")
+    assert vec_loaded is False
+    captured = capsys.readouterr()
+    assert "Warning: sqlite_vec not found" in captured.out
+    conn.close()
+
+def test_init_db_idempotent(db_conn):
+    # init_db is already called when db_conn is created, 
+    # calling it again should not raise any exceptions.
+    init_db(db_conn, vec_loaded=False, embed_dim=768)
+
+def test_arm_column_migration(tmp_path):
+    db_file = tmp_path / "migration.db"
+    conn = sqlite3.connect(str(db_file))
+    conn.execute("""
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            started_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    
+    init_db(conn, vec_loaded=False, embed_dim=768)
+    
+    cursor = conn.execute("PRAGMA table_info(runs)")
+    columns = {row[1] for row in cursor.fetchall()}
+    assert "arm" in columns
+    conn.close()
+
+def test_pragmas_applied(tmp_path):
+    db_file = tmp_path / "pragma.db"
+    conn, _ = get_db(str(db_file))
+    cursor = conn.cursor()
+    
+    wal = cursor.execute("PRAGMA journal_mode").fetchone()[0]
+    assert wal == "wal"
+    
+    sync = cursor.execute("PRAGMA synchronous").fetchone()[0]
+    assert sync == 1  # NORMAL is 1
+    
+    fk = cursor.execute("PRAGMA foreign_keys").fetchone()[0]
+    assert fk == 1
+    
+    cache_size = cursor.execute("PRAGMA cache_size").fetchone()[0]
+    assert cache_size == -64000
+    
+    busy_timeout = cursor.execute("PRAGMA busy_timeout").fetchone()[0]
+    assert busy_timeout == 5000
+    conn.close()
+
+def test_trajectories_table_schema(db_conn):
+    cursor = db_conn.execute("PRAGMA table_info(trajectories)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    assert {"id", "content", "run_id", "created_at"} <= columns
+
+def test_trajectories_vec_table_schema(db_conn):
+    try:
+        import sqlite_vec
+    except ImportError:
+        pytest.skip("sqlite_vec not installed")
+        
+    cursor = db_conn.execute("PRAGMA table_info(trajectories_vec)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    assert {"trajectory_id", "embedding"} <= columns
+
+def test_foreign_key_cascade_trajectories(db_mem):
+    with pytest.raises(sqlite3.IntegrityError):
+        db_mem.execute(
+            "INSERT INTO trajectories (id, content, run_id) VALUES (?, ?, ?)",
+            ("traj-1", "some content", "non-existent-run")
+        )

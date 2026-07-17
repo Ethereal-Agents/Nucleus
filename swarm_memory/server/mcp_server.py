@@ -6,6 +6,7 @@ FastMCP server for SwarmMemory. Exposes the bi-temporal memory hub tools.
 
 import argparse
 import datetime
+import sqlite3
 
 from fastmcp import FastMCP
 
@@ -18,8 +19,14 @@ from swarm_memory.retrieval.reader import FactReader
 from swarm_memory.server.presentation import format_results_for_agent
 from swarm_memory.server.session import SessionManager
 from swarm_memory.store.db import get_initialized_db
+from swarm_memory.core.log import setup_logging, current_run_id, current_arm_id
+from swarm_memory.core import config
+import logging
 
 # Initialize dependencies
+log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
+setup_logging(level=log_level)
+
 db = get_initialized_db()
 embedder = EmbeddingModel()
 detector = ContradictionDetector()
@@ -56,6 +63,8 @@ async def memory_write(
     - confidence: Float from 0.0 to 1.0 indicating your certainty.
     - supersedes_hint: (Optional) If you know this fact explicitly replaces an older fact, pass the old fact's ID here to bypass LLM contradiction detection.
     """
+    current_run_id.set(run_id)
+
     result = await writer.write_fact(
         content=content,
         scope=scope,
@@ -76,6 +85,7 @@ def memory_search(
     as_of: str | None = None,
     top_k: int = 5,
     fact_type: str | None = None,
+    arm: str = "arm3",
 ) -> str:
     """
     Search for relevant facts using hybrid retrieval (semantic + keyword).
@@ -92,6 +102,10 @@ def memory_search(
     - top_k: Maximum number of results to return (default 5).
     - fact_type: (Optional) Filter by a specific fact type (e.g., "gotcha").
     """
+    if run_id:
+        current_run_id.set(run_id)
+    current_arm_id.set(arm)
+
     seen_ids = set()
     if run_id:
         seen_ids = session_manager.get_seen_ids(run_id)
@@ -99,13 +113,19 @@ def memory_search(
     else:
         fetch_k = top_k
 
-    candidates = reader.search(
-        query=query,
-        scope=scope,
-        as_of=as_of,
-        top_k=fetch_k,
-        fact_type=fact_type,
-    )
+    if arm == "arm2":
+        candidates = reader.search_trajectories(
+            query=query,
+            top_k=fetch_k,
+        )
+    else:
+        candidates = reader.search(
+            query=query,
+            scope=scope,
+            as_of=as_of,
+            top_k=fetch_k,
+            fact_type=fact_type,
+        )
 
     fresh = [r for r in candidates if r.fact.id not in seen_ids][:top_k]
 
@@ -136,9 +156,11 @@ def memory_invalidate(
     if not valid_to:
         valid_to = datetime.datetime.now(datetime.UTC).isoformat()
 
-    writer.invalidate_fact(fact_id, valid_to=valid_to)
+    changes = writer.invalidate_fact(fact_id, valid_to=valid_to)
     db.commit()
 
+    if changes == 0:
+        return {"status": "error", "error": f"Fact '{fact_id}' not found or already invalidated."}
     return {"status": "invalidated", "fact_id": fact_id, "reason": reason}
 
 
@@ -171,6 +193,7 @@ def memory_begin_run(
     agent_id: str,
     branch: str | None = None,
     model: str | None = None,
+    arm: str = "arm3",
 ) -> dict:
     """
     Register the start of an agent run. Returns a run_id to pass to all
@@ -186,14 +209,17 @@ def memory_begin_run(
     - branch: (Optional) The specific branch you are working on.
     - model: (Optional) The LLM model name you are using.
     """
+    current_arm_id.set(arm)
     run_id = str(uuid7())
+    current_run_id.set(run_id)
+    
     started_at = datetime.datetime.now(datetime.UTC).isoformat()
     created_at = started_at
 
     db.execute(
-        """INSERT INTO runs (id, agent_id, repo, branch, model, started_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        [run_id, agent_id, repo, branch, model, started_at, created_at],
+        """INSERT INTO runs (id, agent_id, repo, branch, model, started_at, created_at, arm)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        [run_id, agent_id, repo, branch, model, started_at, created_at, arm],
     )
     db.commit()
     return {"run_id": run_id, "status": "started"}
@@ -203,9 +229,11 @@ def memory_begin_run(
 async def memory_end_run(
     run_id: str,
     summary: str = "[]",
+    trajectory: str | None = None,
     input_tokens: int = 0,
     output_tokens: int = 0,
     total_cost_usd: float = 0.0,
+    arm: str = "arm3",
 ) -> dict:
     """
     Mark an agent run as complete and extract durable facts from it.
@@ -238,6 +266,28 @@ async def memory_end_run(
         output_tokens:   Total output tokens used in this run.
         total_cost_usd:  Total cost of this run in USD.
     """
+    current_run_id.set(run_id)
+    current_arm_id.set(arm)
+    
+    import json
+    try:
+        # We parse it eagerly here to validate the structure using our Pydantic models.
+        # This will raise JSONDecodeError or ValueError if fundamentally malformed.
+        drafts = parse_extraction_output(summary, run_id)
+    except (json.JSONDecodeError, ValueError) as e:
+        return {
+            "status": "error",
+            "error": f"Invalid learnings JSON: {e}",
+            "expected_format": [
+                {
+                    "content": "Precise fact in 1-2 sentences.",
+                    "scope": "repo/path",
+                    "fact_type": "insight|convention|architecture|gotcha|dependency",
+                }
+            ],
+            "received": summary[:500],
+        }
+
     finished_at = datetime.datetime.now(datetime.UTC).isoformat()
     db.execute(
         """UPDATE runs
@@ -247,18 +297,37 @@ async def memory_end_run(
     )
     db.commit()
 
-    drafts = parse_extraction_output(summary, run_id)
-    for draft in drafts:
-        await writer.write_fact(
-            content=draft.content,
-            scope=draft.scope,
-            run_id=run_id,
-            fact_type=draft.fact_type,
-            supersedes_hint=draft.supersedes_hint,
-        )
+    saved = []
+    errors = []
+
+    if arm == "arm2" and trajectory:
+        saved, errors = writer.write_trajectory(trajectory, run_id)
+    else:
+        # drafts is already computed at the top of the function
+        for draft in drafts:
+            try:
+                result = await writer.write_fact(
+                    content=draft.content,
+                    scope=draft.scope,
+                    run_id=run_id,
+                    fact_type=draft.fact_type,
+                    supersedes_hint=draft.supersedes_hint,
+                )
+                saved.append({"content": draft.content[:80], "fact_id": result.fact_id, "status": result.status})
+            except Exception as e:
+                errors.append({"content": draft.content[:80], "error": str(e)})
 
     session_manager.end_session(run_id)
-    return {"run_id": run_id, "status": "completed"}
+
+    response = {
+        "run_id": run_id,
+        "status": "completed" if not errors else "partial",
+        "facts_saved": len(saved),
+        "facts_errored": len(errors),
+    }
+    if errors:
+        response["errors"] = errors
+    return response
 
 
 def main():

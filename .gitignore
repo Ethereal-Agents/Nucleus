@@ -57,6 +57,7 @@ coverage.xml
 *.db-wal
 *.sqlite
 *.sqlite3
+database/
 
 # OS generated files
 .DS_Store

@@ -58,25 +58,11 @@ def parse_extraction_output(raw: str, run_id: str) -> list[FactDraft]:
         # 3. Repair: strip trailing comma before ] or } (common LLM mistake)
         # We replace any comma followed by whitespace and a closing bracket/brace
         repaired = re.sub(r",\s*([\]}])", r"\1", text)
-        try:
-            data = json.loads(repaired)
-        except json.JSONDecodeError as exc:
-            logger.warning(
-                "Extraction parse failed for run %s — dropping output: %.200s (Error: %s)",
-                run_id,
-                text,
-                exc,
-            )
-            return []
+        data = json.loads(repaired)  # Let it raise if still invalid
 
     # If the parsed JSON is not a list, it's not the format we expect
     if not isinstance(data, list):
-        logger.warning(
-            "Extraction output for run %s is not a JSON array — dropping output: %.200s",
-            run_id,
-            text,
-        )
-        return []
+        raise ValueError(f"Expected JSON array, got {type(data).__name__}")
 
     # 4. Validate each item with Pydantic — skip individually malformed items
     drafts = []

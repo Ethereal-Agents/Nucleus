@@ -16,6 +16,11 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+# ── Logging ─────────────────────────────────────────────────────────────────
+
+# Logging level for the application.
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
 # ── Database ────────────────────────────────────────────────────────────────
 
 # Path to the SQLite database file.
@@ -74,4 +79,4 @@ SESSION_TTL_SECONDS = int(os.getenv("SWARM_MEMORY_SESSION_TTL", "7200"))
 
 # Used by the core LLMService (e.g. for supersession detection).
 # Since we use LiteLLM, you can prefix with provider (e.g. openrouter/..., openai/...)
-LLM_MODEL = os.getenv("SWARM_MEMORY_LLM_MODEL", "openrouter/anthropic/claude-3.5-sonnet")
+LLM_MODEL = os.getenv("SWARM_MEMORY_LLM_MODEL", "openrouter/xiaomi/mimo-v2.5-pro")

@@ -93,6 +93,10 @@ class ContradictionDetector:
                 system_prompt=SYSTEM_PROMPT, user_prompt=prompt
             )
 
+        if data is None:
+            logger.warning("LLM call failed for contradiction check against fact %s, skipping", candidate.id)
+            return Relationship.INDEPENDENT
+
         rel_str = data.get("relationship", "INDEPENDENT").upper()
         if rel_str in Relationship.__members__:
             return Relationship[rel_str]

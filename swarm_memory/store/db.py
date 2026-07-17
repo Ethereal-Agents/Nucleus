@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS runs (
     total_cost_usd  REAL DEFAULT 0.0,
     started_at      TEXT NOT NULL,
     finished_at     TEXT,
-    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    arm             TEXT DEFAULT 'arm1'
 );
 
 CREATE TABLE IF NOT EXISTS facts (
@@ -59,6 +60,15 @@ CREATE INDEX IF NOT EXISTS idx_facts_source_run
 CREATE INDEX IF NOT EXISTS idx_facts_type
     ON facts(fact_type, scope);
 
+-- Trajectories tables for Arm 2 naive RAG
+CREATE TABLE IF NOT EXISTS trajectories (
+    id              TEXT PRIMARY KEY,
+    content         TEXT NOT NULL,
+    run_id          TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (run_id) REFERENCES runs(id)
+);
+
 -- Full-text search (FTS5)
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
     fact_id UNINDEXED,
@@ -73,6 +83,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
 _VEC_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_vec USING vec0(
     fact_id TEXT PRIMARY KEY,
+    embedding float[{dim}]
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS trajectories_vec USING vec0(
+    trajectory_id TEXT PRIMARY KEY,
     embedding float[{dim}]
 );
 """
@@ -114,6 +129,30 @@ def init_db(conn: sqlite3.Connection, vec_loaded: bool = False, embed_dim: int =
     conn.executescript(_SCHEMA)
     if vec_loaded:
         conn.executescript(_VEC_SCHEMA.format(dim=embed_dim))
+        
+    # Migration for adding `arm` to existing databases
+    try:
+        conn.execute("ALTER TABLE runs ADD COLUMN arm TEXT DEFAULT 'arm1'")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Migration for creating trajectories tables in existing databases
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS trajectories (
+            id              TEXT PRIMARY KEY,
+            content         TEXT NOT NULL,
+            run_id          TEXT NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            FOREIGN KEY (run_id) REFERENCES runs(id)
+        );
+    """)
+    if vec_loaded:
+        conn.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS trajectories_vec USING vec0(
+                trajectory_id TEXT PRIMARY KEY,
+                embedding float[{dim}]
+            );
+        """.format(dim=embed_dim))
 
 
 def get_initialized_db(path: str | None = None) -> sqlite3.Connection:

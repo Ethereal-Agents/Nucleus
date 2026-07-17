@@ -20,12 +20,13 @@ See implementation_plan.md §4, §7 for the full design rationale.
 """
 
 import hashlib
+import json
 import logging
 import sqlite3
 from datetime import UTC, datetime
 
 from swarm_memory.core.embeddings import EmbeddingModel
-from swarm_memory.core.models import Fact, FactType, Relationship, WriteResult
+from swarm_memory.core.models import Fact, FactType, Relationship, WriteResult, uuid7
 from swarm_memory.core.utils import timed
 from swarm_memory.ingestion.supersession import ContradictionDetector
 
@@ -208,14 +209,16 @@ class FactWriter:
 
     def invalidate_fact(
         self, fact_id: str, valid_to: str, superseded_by: str | None = None
-    ) -> None:
+    ) -> int:
         """
         Invalidates a fact by setting its valid_to timestamp and optionally its superseded_by FK.
+        Returns the number of rows modified.
         """
-        self.db.execute(
-            "UPDATE facts SET valid_to = ?, superseded_by = ? WHERE id = ?",
+        cursor = self.db.execute(
+            "UPDATE facts SET valid_to = ?, superseded_by = ? WHERE id = ? AND valid_to IS NULL",
             [valid_to, superseded_by, fact_id],
         )
+        return cursor.rowcount
 
     def _commit_fact_transaction(
         self,
@@ -272,3 +275,50 @@ class FactWriter:
                 raise e
 
         return superseded_ids
+
+    def write_trajectory(self, trajectory_json: str, run_id: str) -> tuple[list[dict], list[dict]]:
+        """
+        Parses and writes trajectory steps to the database.
+        Returns a tuple of (saved, errors).
+        """
+        saved = []
+        errors = []
+        try:
+            items = json.loads(trajectory_json)
+            if not isinstance(items, list):
+                raise ValueError("Trajectory is not a JSON list")
+                
+            for step in items:
+                if not isinstance(step, dict):
+                    continue
+                
+                content = json.dumps(step)
+                try:
+                    vec_bytes = self.embedder.embed(content)
+                    traj_id = str(uuid7())
+                    
+                    self.db.execute("BEGIN")
+                    try:
+                        self.db.execute(
+                            "INSERT INTO trajectories (id, content, run_id) VALUES (?, ?, ?)",
+                            [traj_id, content, run_id]
+                        )
+                        if vec_bytes:
+                            try:
+                                self.db.execute(
+                                    "INSERT INTO trajectories_vec (trajectory_id, embedding) VALUES (?, ?)",
+                                    [traj_id, vec_bytes]
+                                )
+                            except sqlite3.OperationalError:
+                                pass  # ignore if vec table not present
+                        self.db.commit()
+                        saved.append({"content": content[:80], "fact_id": traj_id, "status": "created"})
+                    except Exception as inner_e:
+                        self.db.execute("ROLLBACK")
+                        raise inner_e
+                except Exception as e:
+                    errors.append({"content": content[:80], "error": str(e)})
+        except Exception as e:
+            errors.append({"content": "Trajectory parsing failed", "error": str(e)})
+            
+        return saved, errors

@@ -257,6 +257,7 @@ class FactReader:
         scope_tiers: list[tuple[str, int]],
         top_n: int = 20,
         as_of: str | None = None,
+        fact_type: str | None = None,
     ) -> list[tuple[str, float]]:
         """
         KNN vector search via sqlite-vec.
@@ -282,11 +283,16 @@ class FactReader:
         else:
             time_filter = "AND f.valid_to IS NULL AND f.superseded_by IS NULL"
             time_params = []
+            
+        if fact_type:
+            time_filter += " AND f.fact_type = ?"
+            time_params.append(fact_type)
 
         with timed("dense_search"):
             if scope_tiers:
                 scope_paths = [s for s, _ in scope_tiers]
                 placeholders = ",".join("?" * len(scope_paths))
+                base_scope = scope_paths[0]
                 rows = self._conn.execute(
                     f"""
                     SELECT fv.fact_id, fv.distance
@@ -294,11 +300,11 @@ class FactReader:
                     JOIN facts f ON fv.fact_id = f.id
                     WHERE fv.embedding MATCH ?
                       AND k = ?
-                      AND f.scope IN ({placeholders})
+                      AND (f.scope IN ({placeholders}) OR f.scope LIKE ?)
                       {time_filter}
                     ORDER BY fv.distance
                     """,
-                    [query_vec, top_n, *scope_paths, *time_params],
+                    [query_vec, top_n, *scope_paths, base_scope + "/%", *time_params],
                 ).fetchall()
             else:
                 rows = self._conn.execute(
@@ -350,18 +356,19 @@ class FactReader:
             if scope_tiers:
                 scope_paths = [s for s, _ in scope_tiers]
                 placeholders = ",".join("?" * len(scope_paths))
+                base_scope = scope_paths[0]
                 rows = self._conn.execute(
                     f"""
                     SELECT ff.fact_id, bm25(facts_fts) AS score
                     FROM facts_fts ff
                     JOIN facts f ON ff.fact_id = f.id
                     WHERE facts_fts MATCH ?
-                      AND f.scope IN ({placeholders})
+                      AND (f.scope IN ({placeholders}) OR f.scope LIKE ?)
                       {time_filter}
                     ORDER BY score          -- bm25() is negative; higher (less negative) = better
                     LIMIT ?
                     """,
-                    [fts_expr, *scope_paths, *time_params, top_n],
+                    [fts_expr, *scope_paths, base_scope + "/%", *time_params, top_n],
                 ).fetchall()
             else:
                 rows = self._conn.execute(
@@ -481,6 +488,46 @@ class FactReader:
             )
         return results
 
+    def search_trajectories(self, query: str, top_k: int) -> list[SearchResult]:
+        """
+        Naive vector RAG over raw trajectories (used by arm2).
+        """
+        with timed("search.dense.arm2"):
+            query_vec = self._embedder.embed_query(query)
+            results = []
+            if query_vec:
+                try:
+                    cursor = self._conn.execute(
+                        """
+                        SELECT tv.trajectory_id as id, tv.distance, t.content, t.run_id, t.created_at
+                        FROM trajectories_vec tv
+                        JOIN trajectories t ON tv.trajectory_id = t.id
+                        WHERE tv.embedding MATCH ?
+                          AND k = ?
+                        ORDER BY tv.distance
+                        """,
+                        [query_vec, top_k],
+                    )
+                    rows = cursor.fetchall()
+                    for row in rows:
+                        fact = Fact(
+                            id=row["id"],
+                            content=row["content"],
+                            scope="trajectory",
+                            source_run_id=row["run_id"],
+                            fact_type=FactType.INSIGHT,
+                            created_at=row["created_at"],
+                            valid_from=row["created_at"],
+                        )
+                        results.append(SearchResult(
+                            fact=fact,
+                            relevance_score=1.0 / (1.0 + row["distance"]),
+                            retrieval_method="dense",
+                        ))
+                except sqlite3.OperationalError:
+                    pass
+            return results
+
     # ── Public search API ───────────────────────────────────────────────────
 
     def search(
@@ -532,7 +579,7 @@ class FactReader:
         with timed("search.dense"):
             query_vec = self._embedder.embed_query(query)
             dense_results = self._dense_search(
-                query_vec, scope_tiers, top_n=OVER_FETCH, as_of=as_of
+                query_vec, scope_tiers, top_n=OVER_FETCH, as_of=as_of, fact_type=fact_type
             )
 
         # Step 4 + 5: BM25 search (skipped if query is too vague)
