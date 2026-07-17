@@ -6,11 +6,13 @@ FastMCP server for SwarmMemory. Exposes the bi-temporal memory hub tools.
 
 import argparse
 import datetime
-import sqlite3
+import logging
 
 from fastmcp import FastMCP
 
+from swarm_memory.core import config
 from swarm_memory.core.embeddings import EmbeddingModel
+from swarm_memory.core.log import current_arm_id, current_run_id, setup_logging
 from swarm_memory.core.models import uuid7
 from swarm_memory.ingestion.extraction import parse_extraction_output
 from swarm_memory.ingestion.supersession import ContradictionDetector
@@ -19,9 +21,6 @@ from swarm_memory.retrieval.reader import FactReader
 from swarm_memory.server.presentation import format_results_for_agent
 from swarm_memory.server.session import SessionManager
 from swarm_memory.store.db import get_initialized_db
-from swarm_memory.core.log import setup_logging, current_run_id, current_arm_id
-from swarm_memory.core import config
-import logging
 
 # Initialize dependencies
 log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
@@ -212,7 +211,7 @@ def memory_begin_run(
     current_arm_id.set(arm)
     run_id = str(uuid7())
     current_run_id.set(run_id)
-    
+
     started_at = datetime.datetime.now(datetime.UTC).isoformat()
     created_at = started_at
 
@@ -268,8 +267,9 @@ async def memory_end_run(
     """
     current_run_id.set(run_id)
     current_arm_id.set(arm)
-    
+
     import json
+
     try:
         # We parse it eagerly here to validate the structure using our Pydantic models.
         # This will raise JSONDecodeError or ValueError if fundamentally malformed.
@@ -313,7 +313,13 @@ async def memory_end_run(
                     fact_type=draft.fact_type,
                     supersedes_hint=draft.supersedes_hint,
                 )
-                saved.append({"content": draft.content[:80], "fact_id": result.fact_id, "status": result.status})
+                saved.append(
+                    {
+                        "content": draft.content[:80],
+                        "fact_id": result.fact_id,
+                        "status": result.status,
+                    }
+                )
             except Exception as e:
                 errors.append({"content": draft.content[:80], "error": str(e)})
 

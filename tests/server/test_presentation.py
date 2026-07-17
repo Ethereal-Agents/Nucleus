@@ -73,4 +73,3 @@ class TestFormatResultsForAgent:
         results = [self._make_result("A", FactType.INSIGHT, "test fact")]
         output = format_results_for_agent(results, scope=None)
         assert "for None" in output
-

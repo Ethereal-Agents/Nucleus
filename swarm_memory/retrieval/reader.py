@@ -283,7 +283,7 @@ class FactReader:
         else:
             time_filter = "AND f.valid_to IS NULL AND f.superseded_by IS NULL"
             time_params = []
-            
+
         if fact_type:
             time_filter += " AND f.fact_type = ?"
             time_params.append(fact_type)
@@ -519,11 +519,13 @@ class FactReader:
                             created_at=row["created_at"],
                             valid_from=row["created_at"],
                         )
-                        results.append(SearchResult(
-                            fact=fact,
-                            relevance_score=1.0 / (1.0 + row["distance"]),
-                            retrieval_method="dense",
-                        ))
+                        results.append(
+                            SearchResult(
+                                fact=fact,
+                                relevance_score=1.0 / (1.0 + row["distance"]),
+                                retrieval_method="dense",
+                            )
+                        )
                 except sqlite3.OperationalError:
                     pass
             return results

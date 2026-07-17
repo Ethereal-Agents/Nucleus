@@ -1,3 +1,4 @@
+import contextlib
 import sqlite3
 
 from swarm_memory.core.config import DB_PATH
@@ -129,12 +130,10 @@ def init_db(conn: sqlite3.Connection, vec_loaded: bool = False, embed_dim: int =
     conn.executescript(_SCHEMA)
     if vec_loaded:
         conn.executescript(_VEC_SCHEMA.format(dim=embed_dim))
-        
+
     # Migration for adding `arm` to existing databases
-    try:
+    with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE runs ADD COLUMN arm TEXT DEFAULT 'arm1'")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
 
     # Migration for creating trajectories tables in existing databases
     conn.executescript("""
@@ -147,12 +146,12 @@ def init_db(conn: sqlite3.Connection, vec_loaded: bool = False, embed_dim: int =
         );
     """)
     if vec_loaded:
-        conn.executescript("""
+        conn.executescript(f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS trajectories_vec USING vec0(
                 trajectory_id TEXT PRIMARY KEY,
-                embedding float[{dim}]
+                embedding float[{embed_dim}]
             );
-        """.format(dim=embed_dim))
+        """)
 
 
 def get_initialized_db(path: str | None = None) -> sqlite3.Connection:

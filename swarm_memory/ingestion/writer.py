@@ -19,6 +19,7 @@ Implements the full write path that powers the memory_write tool call:
 See implementation_plan.md §4, §7 for the full design rationale.
 """
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -207,9 +208,7 @@ class FactWriter:
 
         return WriteResult(fact_id=new_fact.id, superseded_ids=superseded_ids, status="created")
 
-    def invalidate_fact(
-        self, fact_id: str, valid_to: str, superseded_by: str | None = None
-    ) -> int:
+    def invalidate_fact(self, fact_id: str, valid_to: str, superseded_by: str | None = None) -> int:
         """
         Invalidates a fact by setting its valid_to timestamp and optionally its superseded_by FK.
         Returns the number of rows modified.
@@ -287,32 +286,32 @@ class FactWriter:
             items = json.loads(trajectory_json)
             if not isinstance(items, list):
                 raise ValueError("Trajectory is not a JSON list")
-                
+
             for step in items:
                 if not isinstance(step, dict):
                     continue
-                
+
                 content = json.dumps(step)
                 try:
                     vec_bytes = self.embedder.embed(content)
                     traj_id = str(uuid7())
-                    
+
                     self.db.execute("BEGIN")
                     try:
                         self.db.execute(
                             "INSERT INTO trajectories (id, content, run_id) VALUES (?, ?, ?)",
-                            [traj_id, content, run_id]
+                            [traj_id, content, run_id],
                         )
                         if vec_bytes:
-                            try:
+                            with contextlib.suppress(sqlite3.OperationalError):
                                 self.db.execute(
                                     "INSERT INTO trajectories_vec (trajectory_id, embedding) VALUES (?, ?)",
-                                    [traj_id, vec_bytes]
+                                    [traj_id, vec_bytes],
                                 )
-                            except sqlite3.OperationalError:
-                                pass  # ignore if vec table not present
                         self.db.commit()
-                        saved.append({"content": content[:80], "fact_id": traj_id, "status": "created"})
+                        saved.append(
+                            {"content": content[:80], "fact_id": traj_id, "status": "created"}
+                        )
                     except Exception as inner_e:
                         self.db.execute("ROLLBACK")
                         raise inner_e
@@ -320,5 +319,5 @@ class FactWriter:
                     errors.append({"content": content[:80], "error": str(e)})
         except Exception as e:
             errors.append({"content": "Trajectory parsing failed", "error": str(e)})
-            
+
         return saved, errors

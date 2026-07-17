@@ -94,7 +94,9 @@ class ContradictionDetector:
             )
 
         if data is None:
-            logger.warning("LLM call failed for contradiction check against fact %s, skipping", candidate.id)
+            logger.warning(
+                "LLM call failed for contradiction check against fact %s, skipping", candidate.id
+            )
             return Relationship.INDEPENDENT
 
         rel_str = data.get("relationship", "INDEPENDENT").upper()

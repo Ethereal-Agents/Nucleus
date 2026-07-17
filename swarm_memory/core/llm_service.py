@@ -58,7 +58,7 @@ class LLMService:
                 if not text:
                     logger.error("LLM returned an empty response. Cannot parse JSON.")
                     return None
-                    
+
                 if text.startswith("```"):
                     text = re.sub(r"^```(?:json)?\s*", "", text)
                     text = re.sub(r"\s*```$", "", text.strip())

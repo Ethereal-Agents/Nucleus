@@ -1,21 +1,21 @@
-import os
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from swarm_memory.core.embeddings import EmbeddingModel
-from swarm_memory.core.models import Fact
 from swarm_memory.ingestion.supersession import ContradictionDetector
 from swarm_memory.ingestion.writer import FactWriter
 from swarm_memory.retrieval.reader import FactReader
 from swarm_memory.store.db import get_initialized_db
+
 
 # FIX-02: Module-scoped embedding model to prevent reloading costs across tests
 @pytest.fixture(scope="session")
 def shared_embedder():
     """Provides a lazily loaded EmbeddingModel that is shared across the test session."""
     return EmbeddingModel()
+
 
 @pytest.fixture
 def mock_embedder():
@@ -26,6 +26,7 @@ def mock_embedder():
     embedder.embed_query.return_value = b"\x00" * (768 * 4)
     return embedder
 
+
 @pytest.fixture
 def mock_detector():
     """Provides a mocked ContradictionDetector that returns no contradictions by default."""
@@ -33,6 +34,7 @@ def mock_detector():
     # Use side_effect to return a fresh list on each call to prevent in-place mutation bugs
     detector.detect_contradictions = AsyncMock(side_effect=lambda *args, **kwargs: [])
     return detector
+
 
 @pytest.fixture
 def db():
@@ -46,6 +48,7 @@ def db():
     yield conn
     conn.close()
 
+
 @pytest.fixture
 def db_with_vec(db):
     """Provides an initialized DB with sqlite-vec confirmed available (or skips test)."""
@@ -56,19 +59,23 @@ def db_with_vec(db):
         pytest.skip("sqlite-vec is not available in this environment")
     return db
 
+
 @pytest.fixture
 def writer(db, mock_embedder, mock_detector):
     """Provides a FactWriter wired to the in-memory db and mocked services."""
     return FactWriter(db, mock_embedder, mock_detector)
+
 
 @pytest.fixture
 def reader(db, mock_embedder):
     """Provides a FactReader wired to the in-memory db with mocked embedder."""
     return FactReader(db, mock_embedder, vec_available=False)
 
+
 @pytest.fixture
 def seed_facts(db, writer):
     """Helper fixture to easily seed facts for retrieval tests."""
+
     async def _seed(facts_data: list[dict]):
         # facts_data = [{"content": "...", "scope": "...", "fact_type": "insight"}]
         ids = []
@@ -79,8 +86,9 @@ def seed_facts(db, writer):
                 run_id="run_1",
                 fact_type=d.get("fact_type", "insight"),
                 confidence=d.get("confidence", 1.0),
-                valid_from=d.get("valid_from")
+                valid_from=d.get("valid_from"),
             )
             ids.append(res.fact_id)
         return ids
+
     return _seed

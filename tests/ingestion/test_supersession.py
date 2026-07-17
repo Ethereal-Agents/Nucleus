@@ -140,6 +140,7 @@ async def test_prompt_contains_fact_content(mock_candidate):
     assert "new session auth" in prompt
     assert "auth" in prompt  # scope
 
+
 @pytest.mark.asyncio
 async def test_detect_contradiction_concurrent_batch_ordering(mock_candidate):
     # SUP-01: Multiple candidates — results maintain correct pairing with input facts
@@ -148,18 +149,16 @@ async def test_detect_contradiction_concurrent_batch_ordering(mock_candidate):
         side_effect=[
             {"relationship": "SUPERSEDES", "reason": "1"},
             {"relationship": "REFINES", "reason": "2"},
-            {"relationship": "INDEPENDENT", "reason": "3"}
+            {"relationship": "INDEPENDENT", "reason": "3"},
         ]
     )
     detector = ContradictionDetector(llm_service=mock_llm)
     c1 = mock_candidate.model_copy(update={"id": "fact-1"})
     c2 = mock_candidate.model_copy(update={"id": "fact-2"})
     c3 = mock_candidate.model_copy(update={"id": "fact-3"})
-    
-    results = await detector.detect_contradictions(
-        [c1, c2, c3], "new text", "auth", "insight"
-    )
-    
+
+    results = await detector.detect_contradictions([c1, c2, c3], "new text", "auth", "insight")
+
     assert len(results) == 3
     assert results[0][0] == c1
     assert results[0][1] == Relationship.SUPERSEDES
@@ -167,6 +166,7 @@ async def test_detect_contradiction_concurrent_batch_ordering(mock_candidate):
     assert results[1][1] == Relationship.REFINES
     assert results[2][0] == c3
     assert results[2][1] == Relationship.INDEPENDENT
+
 
 @pytest.mark.asyncio
 async def test_detect_contradiction_with_refines_relationship(mock_candidate):
@@ -176,10 +176,9 @@ async def test_detect_contradiction_with_refines_relationship(mock_candidate):
         return_value={"relationship": "REFINES", "reason": "Refines the existing fact."}
     )
     detector = ContradictionDetector(llm_service=mock_llm)
-    
+
     result = await detector.detect_contradiction(
         mock_candidate, "new refined info", "auth", "insight"
     )
-    
-    assert result == Relationship.REFINES
 
+    assert result == Relationship.REFINES
