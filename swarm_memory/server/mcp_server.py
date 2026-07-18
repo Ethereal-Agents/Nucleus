@@ -7,6 +7,7 @@ FastMCP server for SwarmMemory. Exposes the bi-temporal memory hub tools.
 import argparse
 import datetime
 import logging
+import re
 
 from fastmcp import FastMCP
 
@@ -35,6 +36,12 @@ session_manager = SessionManager()
 
 mcp = FastMCP("SwarmMemory")
 
+def _get_arm_for_run(run_id: str) -> str:
+    row = db.execute("SELECT arm FROM runs WHERE id = ?", [run_id]).fetchone()
+    if not row:
+        raise ValueError(f"Run ID '{run_id}' not found. Please call memory_begin_run first.")
+    return row["arm"]
+
 
 @mcp.tool()
 async def memory_write(
@@ -62,7 +69,14 @@ async def memory_write(
     - confidence: Float from 0.0 to 1.0 indicating your certainty.
     - supersedes_hint: (Optional) If you know this fact explicitly replaces an older fact, pass the old fact's ID here to bypass LLM contradiction detection.
     """
+    if not (0.0 <= confidence <= 1.0):
+        raise ValueError("Confidence must be between 0.0 and 1.0")
+    if not content.strip():
+        raise ValueError("Fact content cannot be empty")
+
     current_run_id.set(run_id)
+    arm_id = _get_arm_for_run(run_id)
+    current_arm_id.set(arm_id)
 
     result = await writer.write_fact(
         content=content,
@@ -79,12 +93,11 @@ async def memory_write(
 @mcp.tool()
 def memory_search(
     query: str,
+    run_id: str,
     scope: str | None = None,
-    run_id: str | None = None,
     as_of: str | None = None,
     top_k: int = 5,
     fact_type: str | None = None,
-    arm: str = "arm3",
 ) -> str:
     """
     Search for relevant facts using hybrid retrieval (semantic + keyword).
@@ -95,24 +108,20 @@ def memory_search(
 
     Parameters:
     - query: Natural language search query (e.g., "How does authentication work?").
+    - run_id: Your current session ID from memory_begin_run. This enables in-session deduplication so you aren't shown the same fact twice.
     - scope: (Optional) The hierarchical scope to restrict the search to (e.g., "my-repo/src/auth"). If omitted, searches globally across the repo.
-    - run_id: (Recommended) Your current session ID from memory_begin_run. This enables in-session deduplication so you aren't shown the same fact twice.
     - as_of: (Optional) ISO-8601 timestamp for time-travel queries.
     - top_k: Maximum number of results to return (default 5).
     - fact_type: (Optional) Filter by a specific fact type (e.g., "gotcha").
     """
-    if run_id:
-        current_run_id.set(run_id)
-    current_arm_id.set(arm)
+    current_run_id.set(run_id)
+    arm_id = _get_arm_for_run(run_id)
+    current_arm_id.set(arm_id)
 
-    seen_ids = set()
-    if run_id:
-        seen_ids = session_manager.get_seen_ids(run_id)
-        fetch_k = top_k + len(seen_ids)
-    else:
-        fetch_k = top_k
+    seen_ids = session_manager.get_seen_ids(run_id)
+    fetch_k = top_k + len(seen_ids)
 
-    if arm == "arm2":
+    if arm_id == "arm2":
         candidates = reader.search_trajectories(
             query=query,
             top_k=fetch_k,
@@ -128,8 +137,7 @@ def memory_search(
 
     fresh = [r for r in candidates if r.fact.id not in seen_ids][:top_k]
 
-    if run_id:
-        session_manager.mark_seen(run_id, [r.fact.id for r in fresh])
+    session_manager.mark_seen(run_id, [r.fact.id for r in fresh])
 
     display_scope = scope if scope else "all scopes"
     return format_results_for_agent(fresh, display_scope)
@@ -139,6 +147,7 @@ def memory_search(
 def memory_invalidate(
     fact_id: str,
     reason: str,
+    run_id: str,
     valid_to: str | None = None,
 ) -> dict:
     """
@@ -150,8 +159,12 @@ def memory_invalidate(
     Parameters:
     - fact_id: The unique ID of the fact to invalidate (obtained from memory_search results).
     - reason: A brief explanation of why this fact is no longer valid.
+    - run_id: Your current session ID (obtained from memory_begin_run).
     - valid_to: (Optional) ISO-8601 timestamp for when the fact became invalid. Defaults to now.
     """
+    current_run_id.set(run_id)
+    arm_id = _get_arm_for_run(run_id)
+    current_arm_id.set(arm_id)
     if not valid_to:
         valid_to = datetime.datetime.now(datetime.UTC).isoformat()
 
@@ -165,6 +178,7 @@ def memory_invalidate(
 
 @mcp.tool()
 def memory_list_runs(
+    run_id: str,
     repo: str | None = None,
     limit: int = 10,
 ) -> list[dict]:
@@ -174,9 +188,13 @@ def memory_list_runs(
     Use this tool to see what other agents have recently worked on.
 
     Parameters:
+    - run_id: Your current session ID (obtained from memory_begin_run).
     - repo: (Optional) Filter by repository name.
     - limit: Maximum number of runs to return (default 10).
     """
+    current_run_id.set(run_id)
+    arm_id = _get_arm_for_run(run_id)
+    current_arm_id.set(arm_id)
     if repo:
         rows = db.execute(
             "SELECT * FROM runs WHERE repo = ? ORDER BY started_at DESC LIMIT ?", [repo, limit]
@@ -192,7 +210,7 @@ def memory_begin_run(
     agent_id: str,
     branch: str | None = None,
     model: str | None = None,
-    arm: str = "arm3",
+    arm_id: str = "arm3",
 ) -> dict:
     """
     Register the start of an agent run. Returns a run_id to pass to all
@@ -207,8 +225,16 @@ def memory_begin_run(
     - agent_id: Your unique identifier or role name.
     - branch: (Optional) The specific branch you are working on.
     - model: (Optional) The LLM model name you are using.
+    - arm_id: (Optional) The ARM variant identifying the behavior mode (e.g., "arm3"). Defaults to "arm3".
     """
-    current_arm_id.set(arm)
+    repo = repo.strip()
+    if not re.match(r"^[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*$", repo):
+        raise ValueError(
+            f"Invalid repository name provided: '{repo}'. "
+            "Expected a valid name like 'org/repo' or 'repo'."
+        )
+
+    current_arm_id.set(arm_id)
     run_id = str(uuid7())
     current_run_id.set(run_id)
 
@@ -218,7 +244,7 @@ def memory_begin_run(
     db.execute(
         """INSERT INTO runs (id, agent_id, repo, branch, model, started_at, created_at, arm)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        [run_id, agent_id, repo, branch, model, started_at, created_at, arm],
+        [run_id, agent_id, repo, branch, model, started_at, created_at, arm_id],
     )
     db.commit()
     return {"run_id": run_id, "status": "started"}
@@ -232,7 +258,6 @@ async def memory_end_run(
     input_tokens: int = 0,
     output_tokens: int = 0,
     total_cost_usd: float = 0.0,
-    arm: str = "arm3",
 ) -> dict:
     """
     Mark an agent run as complete and extract durable facts from it.
@@ -261,12 +286,18 @@ async def memory_end_run(
     Args:
         run_id:          ID returned by memory_begin_run().
         summary:         JSON array of extracted facts (see format above).
+        trajectory:      Optional JSON string of the agent's trajectory (used primarily in arm2).
         input_tokens:    Total input tokens used in this run (for cost tracking).
         output_tokens:   Total output tokens used in this run.
         total_cost_usd:  Total cost of this run in USD.
     """
     current_run_id.set(run_id)
-    current_arm_id.set(arm)
+    arm_id = _get_arm_for_run(run_id)
+    current_arm_id.set(arm_id)
+
+    row = db.execute("SELECT finished_at FROM runs WHERE id = ?", [run_id]).fetchone()
+    if row and row["finished_at"] is not None:
+        raise ValueError(f"Run ID '{run_id}' is already finished.")
 
     import json
 
@@ -300,7 +331,7 @@ async def memory_end_run(
     saved = []
     errors = []
 
-    if arm == "arm2" and trajectory:
+    if arm_id == "arm2" and trajectory:
         saved, errors = writer.write_trajectory(trajectory, run_id)
     else:
         # drafts is already computed at the top of the function
