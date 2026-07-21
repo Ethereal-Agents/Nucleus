@@ -23,10 +23,27 @@ class FactType(StrEnum):
     DEPENDENCY = "dependency"
 
 
-class Relationship(StrEnum):
-    SUPERSEDES = "SUPERSEDES"
-    REFINES = "REFINES"
-    INDEPENDENT = "INDEPENDENT"
+class WriteStatus(StrEnum):
+    CREATED = "created"
+    DUPLICATE = "duplicate"
+    CONSOLIDATED = "consolidated"
+    SPLIT = "split"
+
+
+class ConsolidationStatus(StrEnum):
+    INDEPENDENT = "independent"
+    DUPLICATE = "duplicate"
+    CONSOLIDATED = "consolidated"
+
+
+class ConsolidationResult(BaseModel):
+    status: ConsolidationStatus
+    superseded_ids: list[str] = Field(default_factory=list)
+    merged_text: str
+
+
+class SplitFactResult(BaseModel):
+    facts: list[str] = Field(default_factory=list)
 
 
 class Fact(BaseModel):
@@ -67,6 +84,7 @@ class SearchResult(BaseModel):
 
 
 class WriteResult(BaseModel):
-    fact_id: str
+    fact_ids: list[str]
     superseded_ids: list[str]
-    status: str
+    status: WriteStatus
+    message: str

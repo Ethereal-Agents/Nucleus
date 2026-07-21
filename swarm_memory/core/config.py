@@ -59,6 +59,11 @@ RRF_K = int(os.getenv("SWARM_MEMORY_RRF_K", "60"))
 DENSE_WEIGHT = float(os.getenv("SWARM_MEMORY_DENSE_WEIGHT", "1.0"))
 BM25_WEIGHT = float(os.getenv("SWARM_MEMORY_BM25_WEIGHT", "0.8"))
 
+# Fact extraction settings
+DEFAULT_FACT_TYPE = "insight"
+MIN_CONFIDENCE_THRESHOLD = 0.5
+FACT_WORD_THRESHOLD = 150  # Split facts longer than this many words into smaller independent chunks
+
 # Confidence decay per day (0.01 = 1% per day).
 # Applied to fact relevance scores to give recency bias:
 #   adjusted_score = score * max(DECAY_FLOOR, 1.0 - age_days * DECAY_RATE)

@@ -30,7 +30,6 @@ CREATE TABLE IF NOT EXISTS facts (
 
     valid_from      TEXT NOT NULL,
     valid_to        TEXT,
-    superseded_by   TEXT,
 
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     source_run_id   TEXT NOT NULL,
@@ -38,22 +37,32 @@ CREATE TABLE IF NOT EXISTS facts (
     extraction_method TEXT DEFAULT 'llm_summary',
     content_hash    TEXT,
 
-    FOREIGN KEY (superseded_by) REFERENCES facts(id),
     FOREIGN KEY (source_run_id) REFERENCES runs(id),
     UNIQUE(content_hash)
+);
+
+CREATE TABLE IF NOT EXISTS fact_lineage (
+    predecessor_id  TEXT NOT NULL,
+    successor_id    TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (predecessor_id, successor_id),
+    FOREIGN KEY (predecessor_id) REFERENCES facts(id),
+    FOREIGN KEY (successor_id) REFERENCES facts(id)
 );
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_facts_current
     ON facts(scope, valid_to)
-    WHERE valid_to IS NULL AND superseded_by IS NULL;
+    WHERE valid_to IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_facts_valid_range
     ON facts(scope, valid_from, valid_to);
 
-CREATE INDEX IF NOT EXISTS idx_facts_superseded_by
-    ON facts(superseded_by)
-    WHERE superseded_by IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_lineage_pred
+    ON fact_lineage(predecessor_id);
+
+CREATE INDEX IF NOT EXISTS idx_lineage_succ
+    ON fact_lineage(successor_id);
 
 CREATE INDEX IF NOT EXISTS idx_facts_source_run
     ON facts(source_run_id);

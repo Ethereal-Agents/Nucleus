@@ -16,7 +16,7 @@ from swarm_memory.core.embeddings import EmbeddingModel
 from swarm_memory.core.log import current_arm_id, current_run_id, setup_logging
 from swarm_memory.core.models import uuid7
 from swarm_memory.ingestion.extraction import parse_extraction_output
-from swarm_memory.ingestion.supersession import ContradictionDetector
+from swarm_memory.ingestion.supersession import ConsolidationEngine
 from swarm_memory.ingestion.writer import FactWriter
 from swarm_memory.retrieval.reader import FactReader
 from swarm_memory.server.presentation import format_results_for_agent
@@ -29,8 +29,8 @@ setup_logging(level=log_level)
 
 db = get_initialized_db()
 embedder = EmbeddingModel()
-detector = ContradictionDetector()
-writer = FactWriter(db=db, embedder=embedder, detector=detector)
+engine = ConsolidationEngine()
+writer = FactWriter(db=db, embedder=embedder, engine=engine)
 reader = FactReader(conn=db, embedder=embedder)
 session_manager = SessionManager()
 
@@ -114,6 +114,10 @@ def memory_search(
     - top_k: Maximum number of results to return (default 5).
     - fact_type: (Optional) Filter by a specific fact type (e.g., "gotcha").
     """
+    if not run_id:
+        raise ValueError(
+            "run_id is required to perform in-session deduplication. Please pass the run_id from memory_begin_run."
+        )
     current_run_id.set(run_id)
     arm_id = _get_arm_for_run(run_id)
     current_arm_id.set(arm_id)
@@ -137,7 +141,9 @@ def memory_search(
 
     fresh = [r for r in candidates if r.fact.id not in seen_ids][:top_k]
 
-    session_manager.mark_seen(run_id, [r.fact.id for r in fresh])
+    # Only track seen IDs when there is a real session run_id
+    if run_id:
+        session_manager.mark_seen(run_id, [r.fact.id for r in fresh])
 
     display_scope = scope if scope else "all scopes"
     return format_results_for_agent(fresh, display_scope)
@@ -208,9 +214,9 @@ def memory_list_runs(
 def memory_begin_run(
     repo: str,
     agent_id: str,
+    arm: str = "arm3",
     branch: str | None = None,
     model: str | None = None,
-    arm_id: str = "arm3",
 ) -> dict:
     """
     Register the start of an agent run. Returns a run_id to pass to all
@@ -223,9 +229,9 @@ def memory_begin_run(
     Parameters:
     - repo: The root name of the repository you are working on (e.g., "Nuclues").
     - agent_id: Your unique identifier or role name.
+    - arm: The ARM variant identifying the behavior mode (e.g., "arm3"). Defaults to "arm3".
     - branch: (Optional) The specific branch you are working on.
     - model: (Optional) The LLM model name you are using.
-    - arm_id: (Optional) The ARM variant identifying the behavior mode (e.g., "arm3"). Defaults to "arm3".
     """
     repo = repo.strip()
     if not re.match(r"^[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*$", repo):
@@ -234,7 +240,7 @@ def memory_begin_run(
             "Expected a valid name like 'org/repo' or 'repo'."
         )
 
-    current_arm_id.set(arm_id)
+    current_arm_id.set(arm)
     run_id = str(uuid7())
     current_run_id.set(run_id)
 
@@ -244,7 +250,7 @@ def memory_begin_run(
     db.execute(
         """INSERT INTO runs (id, agent_id, repo, branch, model, started_at, created_at, arm)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        [run_id, agent_id, repo, branch, model, started_at, created_at, arm_id],
+        [run_id, agent_id, repo, branch, model, started_at, created_at, arm],
     )
     db.commit()
     return {"run_id": run_id, "status": "started"}
@@ -344,13 +350,18 @@ async def memory_end_run(
                     fact_type=draft.fact_type,
                     supersedes_hint=draft.supersedes_hint,
                 )
-                saved.append(
-                    {
-                        "content": draft.content[:80],
-                        "fact_id": result.fact_id,
-                        "status": result.status,
-                    }
-                )
+                if result.fact_ids:
+                    saved.append(
+                        {
+                            "content": draft.content[:80],
+                            "fact_ids": result.fact_ids,
+                            "status": result.status,
+                        }
+                    )
+                else:
+                    errors.append(
+                        {"content": draft.content[:80], "error": "write returned no fact_ids"}
+                    )
             except Exception as e:
                 errors.append({"content": draft.content[:80], "error": str(e)})
 

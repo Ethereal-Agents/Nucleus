@@ -26,7 +26,7 @@ def reset_mcp_state():
     """
     import swarm_memory.server.mcp_server as mcp_module
     from swarm_memory.core.embeddings import EmbeddingModel
-    from swarm_memory.ingestion.supersession import ContradictionDetector
+    from swarm_memory.ingestion.supersession import ConsolidationEngine
     from swarm_memory.ingestion.writer import FactWriter
     from swarm_memory.retrieval.reader import FactReader
     from swarm_memory.server.session import SessionManager
@@ -34,9 +34,9 @@ def reset_mcp_state():
 
     mcp_module.db = get_initialized_db(":memory:")
     mcp_module.embedder = EmbeddingModel()
-    mcp_module.detector = ContradictionDetector()
+    mcp_module.detector = ConsolidationEngine()
     mcp_module.writer = FactWriter(
-        db=mcp_module.db, embedder=mcp_module.embedder, detector=mcp_module.detector
+        db=mcp_module.db, embedder=mcp_module.embedder, engine=mcp_module.engine
     )
     mcp_module.reader = FactReader(conn=mcp_module.db, embedder=mcp_module.embedder)
     mcp_module.session_manager = SessionManager()
@@ -59,7 +59,7 @@ async def test_mcp_lifecycle():
         fact_type="architecture",
     )
     assert write_res1["status"] == "created"
-    fact1_id = write_res1["fact_id"]
+    fact1_id = write_res1["fact_ids"][0]
 
     # 3. Search and verify
     search_res1 = memory_search(query="auth", scope="testrepo/src/auth", run_id=run_id, top_k=5)
@@ -80,7 +80,7 @@ async def test_mcp_lifecycle():
         supersedes_hint=fact1_id,
     )
     assert write_res2["status"] == "created"
-    fact2_id = write_res2["fact_id"]
+    fact2_id = write_res2["fact_ids"][0]
     assert fact1_id in write_res2["superseded_ids"]
 
     # 5. Search for the new fact (using a new run_id to avoid dedup)
@@ -244,7 +244,7 @@ async def test_write_duplicate_returns_duplicate_status():
     assert res1["status"] == "created"
     res2 = await memory_write(content="Fact Duplicate", scope="repo/path", run_id=run_id)
     assert res2["status"] == "duplicate"
-    assert res1["fact_id"] == res2["fact_id"]
+    assert res1["fact_ids"][0] == res2["fact_ids"][0]
 
 
 @pytest.mark.asyncio
@@ -253,10 +253,10 @@ async def test_write_with_supersedes_hint():
     run_id = run_res["run_id"]
     res1 = await memory_write(content="Fact Old", scope="repo/path", run_id=run_id)
     res2 = await memory_write(
-        content="Fact New", scope="repo/path", run_id=run_id, supersedes_hint=res1["fact_id"]
+        content="Fact New", scope="repo/path", run_id=run_id, supersedes_hint=res1["fact_ids"][0]
     )
     assert res2["status"] == "created"
-    assert res1["fact_id"] in res2["superseded_ids"]
+    assert res1["fact_ids"][0] in res2["superseded_ids"]
 
 
 # ==========================================
@@ -351,7 +351,7 @@ async def test_invalidate_existing_fact():
     run_res = memory_begin_run(repo="testrepo", agent_id="agent1")
     run_id = run_res["run_id"]
     w_res = await memory_write(content="To be invalidated", scope="repo", run_id=run_id)
-    fact_id = w_res["fact_id"]
+    fact_id = w_res["fact_ids"][0]
 
     inv_res = memory_invalidate(fact_id=fact_id, reason="Testing")
     assert inv_res["status"] == "invalidated"
@@ -368,7 +368,7 @@ async def test_invalidate_sets_valid_to():
     run_res = memory_begin_run(repo="testrepo", agent_id="agent1")
     run_id = run_res["run_id"]
     w_res = await memory_write(content="To be invalidated valid_to", scope="repo", run_id=run_id)
-    fact_id = w_res["fact_id"]
+    fact_id = w_res["fact_ids"][0]
 
     memory_invalidate(fact_id=fact_id, reason="Testing")
     from swarm_memory.server.mcp_server import db
@@ -384,7 +384,7 @@ async def test_invalidate_custom_valid_to():
     w_res = await memory_write(
         content="To be invalidated custom valid_to", scope="repo", run_id=run_id
     )
-    fact_id = w_res["fact_id"]
+    fact_id = w_res["fact_ids"][0]
     custom_time = "2024-01-01T00:00:00Z"
 
     memory_invalidate(fact_id=fact_id, reason="Testing", valid_to=custom_time)
@@ -399,7 +399,7 @@ async def test_invalidate_already_invalidated():
     run_res = memory_begin_run(repo="testrepo", agent_id="agent1")
     run_id = run_res["run_id"]
     w_res = await memory_write(content="Double invalidate", scope="repo", run_id=run_id)
-    fact_id = w_res["fact_id"]
+    fact_id = w_res["fact_ids"][0]
 
     res1 = memory_invalidate(fact_id=fact_id, reason="First")
     assert res1["status"] == "invalidated"

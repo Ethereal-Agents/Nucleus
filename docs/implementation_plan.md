@@ -70,7 +70,7 @@ class FactDraft(BaseModel):
 > [!IMPORTANT]
 > `valid_from` is deliberately excluded from the agent's output format.
 > It is set by the server at the moment `memory_end_run` is called.
-> `supersedes_hint` is a hint only — `ContradictionDetector` makes the final call.
+> `supersedes_hint` is a hint only — `ConsolidationEngine` makes the final call.
 
 ---
 

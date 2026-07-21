@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from swarm_memory.core.embeddings import EmbeddingModel
-from swarm_memory.ingestion.supersession import ContradictionDetector
+from swarm_memory.ingestion.supersession import ConsolidationEngine
 from swarm_memory.ingestion.writer import FactWriter
 from swarm_memory.retrieval.reader import FactReader
 from swarm_memory.store.db import get_initialized_db
@@ -29,10 +29,10 @@ def mock_embedder():
 
 @pytest.fixture
 def mock_detector():
-    """Provides a mocked ContradictionDetector that returns no contradictions by default."""
-    detector = MagicMock(spec=ContradictionDetector)
+    """Provides a mocked ConsolidationEngine that returns no contradictions by default."""
+    detector = MagicMock(spec=ConsolidationEngine)
     # Use side_effect to return a fresh list on each call to prevent in-place mutation bugs
-    detector.detect_contradictions = AsyncMock(side_effect=lambda *args, **kwargs: [])
+    detector.consolidate_facts = AsyncMock(side_effect=lambda *args, **kwargs: [])
     return detector
 
 

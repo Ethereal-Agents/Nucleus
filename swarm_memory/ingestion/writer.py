@@ -2,21 +2,6 @@
 swarm_memory/ingestion/writer.py
 
 Write Pipeline + Supersession for SwarmMemory.
-
-Implements the full write path that powers the memory_write tool call:
-
-  Agent write
-    ├─ 1. Content Hash Check       → prevents duplicate facts from re-extraction
-    ├─ 2. embed_fact               → float32 bytes for the new fact
-    ├─ 3. _find_similar_valid_facts→ fetch top-5 candidates in exact scope
-    ├─ 4. detect_contradictions    → concurrently call LLM to evaluate candidates
-    └─ 5. Atomic Transaction:
-            ├─ INSERT new fact, embedding, and FTS entry
-            └─ For each SUPERSEDES:
-                 ├─ UPDATE old fact (set valid_to, superseded_by)
-                 └─ DELETE old fact from FTS index
-
-See implementation_plan.md §4, §7 for the full design rationale.
 """
 
 import contextlib
@@ -26,31 +11,25 @@ import logging
 import sqlite3
 from datetime import UTC, datetime
 
+import swarm_memory.core.config as config
 from swarm_memory.core.embeddings import EmbeddingModel
-from swarm_memory.core.models import Fact, FactType, Relationship, WriteResult, uuid7
+from swarm_memory.core.models import Fact, WriteResult, WriteStatus, uuid7, ConsolidationStatus
 from swarm_memory.core.utils import timed
-from swarm_memory.ingestion.supersession import ContradictionDetector
+from swarm_memory.ingestion.supersession import ConsolidationEngine
 
 logger = logging.getLogger(__name__)
 
 
 class FactWriter:
-    """
-    FactWriter orchestrates the ingestion of new facts into the shared memory hub.
-
-    It ensures that writes are idempotent and that contradictory older facts are
-    superseded correctly within atomic transactions.
-    """
-
     def __init__(
         self,
         db: sqlite3.Connection,
         embedder: EmbeddingModel,
-        detector: ContradictionDetector,
+        engine: ConsolidationEngine,
     ):
         self.db = db
         self.embedder = embedder
-        self.detector = detector
+        self.engine = engine
 
     def _find_similar_valid_facts(
         self,
@@ -60,14 +39,6 @@ class FactWriter:
         limit: int = 5,
         exclude_ids: set[str] | None = None,
     ) -> list[Fact]:
-        """
-        Find existing facts in the same scope that are semantically similar.
-
-        Uses sqlite-vec to find facts with cosine similarity >= threshold.
-        These serve as candidates for the contradiction detection LLM.
-        """
-        # Convert cosine similarity threshold to Euclidean distance (L2) threshold.
-        # For normalized vectors (L2 norm = 1), distance^2 = 2 - 2 * cosine_similarity.
         max_distance = (2.0 - 2.0 * threshold) ** 0.5
         exclude_clause = ""
         params = [embedding, limit, scope]
@@ -84,7 +55,6 @@ class FactWriter:
               AND k = ?
               AND f.scope = ?
               AND f.valid_to IS NULL
-              AND f.superseded_by IS NULL
               {exclude_clause}
             ORDER BY fv.distance
         """
@@ -93,11 +63,10 @@ class FactWriter:
                 cursor = self.db.execute(query_vec, params)
                 results = cursor.fetchall()
             except sqlite3.OperationalError as e:
-                # Fallback if sqlite-vec MATCH is not available or virtual table is mocked
                 logger.debug(f"sqlite-vec not available or missing facts_vec table: {e}")
                 return []
 
-            facts = []
+        facts = []
         for row in results:
             if row["distance"] <= max_distance:
                 fact_row = self.db.execute(
@@ -117,54 +86,35 @@ class FactWriter:
         confidence: float = 1.0,
         supersedes_hint: str | None = None,
     ) -> WriteResult:
-        """
-        Write a new fact to the shared memory hub.
-
-        Automatically detects and supersedes contradicting older facts.
-        Idempotent: writing the same content+scope twice returns the existing fact without re-embedding.
-
-        Args:
-            content:    The natural language fact or insight.
-            scope:      The exact scope path (e.g., 'myrepo/src/auth').
-            run_id:     The session ID of the agent writing this fact (provenance).
-            valid_from: Optional ISO-8601 timestamp. Defaults to now UTC.
-            fact_type:  Type of fact ('insight', 'gotcha', 'convention', etc.).
-            confidence: Float 0.0 - 1.0 representing certainty. Defaults to 1.0.
-            supersedes_hint: Optional fact_id that this fact replaces (skips LLM check for that fact).
-
-        Returns:
-            WriteResult containing the new fact_id, a list of any superseded_ids, and a status string.
-        """
         if not valid_from:
             valid_from = datetime.now(UTC).isoformat()
         else:
-            # Validate eagerly — raises ValueError with a clear message if malformed
-            datetime.fromisoformat(valid_from.replace("Z", "+00:00"))
+            # Normalize to +00:00 form (SQLite stores whatever we give it;
+            # keep it consistent so time-travel queries work reliably).
+            valid_from = datetime.fromisoformat(valid_from.replace("Z", "+00:00")).isoformat()
 
         with timed("write.duplicate_check"):
             content_hash = hashlib.sha256(f"{content}|{scope}".encode()).hexdigest()
-
             existing = self.db.execute(
                 "SELECT id FROM facts WHERE content_hash = ?", [content_hash]
             ).fetchone()
-
             if existing:
-                logger.info("Fact is duplicate of existing ID: %s", existing["id"])
-                return WriteResult(fact_id=existing["id"], superseded_ids=[], status="duplicate")
+                existing_id = existing["id"]
+                return WriteResult(
+                    fact_ids=[existing_id], 
+                    superseded_ids=[], 
+                    status=WriteStatus.DUPLICATE,
+                    message=f"Duplicate of existing fact {existing_id} (exact match). No new fact created."
+                )
 
         hint_fact: Fact | None = None
         if supersedes_hint:
             row = self.db.execute(
-                "SELECT * FROM facts WHERE id = ? AND valid_to IS NULL AND superseded_by IS NULL",
+                "SELECT * FROM facts WHERE id = ? AND valid_to IS NULL",
                 [supersedes_hint],
             ).fetchone()
             if row:
                 hint_fact = Fact(**dict(row))
-            else:
-                logger.warning(
-                    "supersedes_hint %s is invalid or already superseded; ignoring.",
-                    supersedes_hint,
-                )
 
         with timed("write.embed"):
             embedding = self.embedder.embed(content, prefix="search_document: ")
@@ -177,109 +127,144 @@ class FactWriter:
             exclude_ids={supersedes_hint} if hint_fact else None,
         )
 
-        with timed("write.detect_contradictions"):
-            relationships = await self.detector.detect_contradictions(
-                candidates=candidates,
+        with timed("write.consolidate_facts"):
+            result = await self.engine.consolidate_facts(
                 new_content=content,
-                new_scope=scope,
-                new_fact_type=fact_type,
+                existing_facts=candidates,
             )
 
-        if hint_fact:
-            relationships.append((hint_fact, Relationship.SUPERSEDES))
+        status = result.status
+        superseded_ids = result.superseded_ids
+        merged_text = result.merged_text
 
-        # create new Fact locally, then write
-        new_fact = Fact(
-            content=content,
-            fact_type=FactType(fact_type),
+        if status == ConsolidationStatus.DUPLICATE:
+            existing_id = superseded_ids[0] if superseded_ids else None
+            return WriteResult(
+                fact_ids=[existing_id] if existing_id else [], 
+                superseded_ids=[], 
+                status=WriteStatus.DUPLICATE,
+                message=f"Duplicate of existing fact {existing_id}. No new fact created."
+            )
+
+        # Map to WriteStatus for remaining logic
+        write_status = WriteStatus.CREATED if status == ConsolidationStatus.INDEPENDENT else WriteStatus.CONSOLIDATED
+
+        if hint_fact and hint_fact.id not in superseded_ids:
+            superseded_ids.append(hint_fact.id)
+            write_status = WriteStatus.CONSOLIDATED
+
+        # Word-count based split.
+        word_count = len(merged_text.split())
+        splits = [merged_text]
+        if word_count > config.FACT_WORD_THRESHOLD:
+            logger.info(f"Fact exceeds {config.FACT_WORD_THRESHOLD} words, splitting...")
+            splits = await self.engine.split_fact(merged_text)
+            write_status = WriteStatus.SPLIT
+
+        new_ids = self._execute_write_transaction(
+            splits=splits,
             scope=scope,
+            fact_type=fact_type,
             confidence=confidence,
-            valid_from=datetime.fromisoformat(valid_from.replace("Z", "+00:00")),
-            source_run_id=run_id,
-            content_hash=content_hash,
-        )
-
-        superseded_ids = self._commit_fact_transaction(
-            new_fact=new_fact,
-            embedding=embedding,
-            relationships=relationships,
             valid_from=valid_from,
+            run_id=run_id,
+            content=content,
+            embedding=embedding,
+            superseded_ids=superseded_ids,
         )
 
-        return WriteResult(fact_id=new_fact.id, superseded_ids=superseded_ids, status="created")
+        if write_status == WriteStatus.CREATED:
+            message = "Inserted as an independent new fact."
+        elif write_status == WriteStatus.CONSOLIDATED:
+            message = f"Inserted as a consolidated fact. Replaced {len(superseded_ids)} older overlapping fact(s)."
+        elif write_status == WriteStatus.SPLIT:
+            message = f"Fact exceeded length threshold and was split into {len(new_ids)} independent facts. Replaced {len(superseded_ids)} older overlapping fact(s)."
+        else:
+            message = f"Fact processed with status: {write_status}"
 
-    def invalidate_fact(self, fact_id: str, valid_to: str, superseded_by: str | None = None) -> int:
-        """
-        Invalidates a fact by setting its valid_to timestamp and optionally its superseded_by FK.
-        Returns the number of rows modified.
-        """
-        cursor = self.db.execute(
-            "UPDATE facts SET valid_to = ?, superseded_by = ? WHERE id = ? AND valid_to IS NULL",
-            [valid_to, superseded_by, fact_id],
+        return WriteResult(
+            fact_ids=new_ids, 
+            superseded_ids=superseded_ids, 
+            status=write_status,
+            message=message
         )
-        return cursor.rowcount
 
-    def _commit_fact_transaction(
+    def _execute_write_transaction(
         self,
-        new_fact: Fact,
-        embedding: bytes,
-        relationships: list[tuple[Fact, Relationship]],
+        splits: list[str],
+        scope: str,
+        fact_type: str,
+        confidence: float,
         valid_from: str,
+        run_id: str,
+        content: str,
+        embedding: bytes,
+        superseded_ids: list[str],
     ) -> list[str]:
-        """
-        Executes the atomic database transaction to insert a new fact and invalidate any superseded facts.
-        """
-        superseded_ids = []
-
+        new_ids = []
         with timed("write.transaction"):
             self.db.execute("BEGIN")
             try:
-                self.db.execute(
-                    """INSERT INTO facts
-                       (id, content, fact_type, scope, confidence, valid_from, created_at, source_run_id, content_hash)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [
-                        new_fact.id,
-                        new_fact.content,
-                        new_fact.fact_type,
-                        new_fact.scope,
-                        new_fact.confidence,
-                        new_fact.valid_from.isoformat(),
-                        new_fact.created_at.isoformat(),
-                        new_fact.source_run_id,
-                        new_fact.content_hash,
-                    ],
-                )
+                for split_content in splits:
+                    new_id = str(uuid7())
+                    split_hash = hashlib.sha256(f"{split_content}|{scope}".encode()).hexdigest()
 
-                self.db.execute(
-                    "INSERT INTO facts_vec (fact_id, embedding) VALUES (?, ?)",
-                    [new_fact.id, embedding],
-                )
-                self.db.execute(
-                    "INSERT INTO facts_fts (fact_id, content, scope) VALUES (?, ?, ?)",
-                    [new_fact.id, new_fact.content, new_fact.scope],
-                )
+                    self.db.execute(
+                        """INSERT INTO facts
+                           (id, content, fact_type, scope, confidence, valid_from, source_run_id, content_hash)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        [
+                            new_id,
+                            split_content,
+                            fact_type,
+                            scope,
+                            confidence,
+                            valid_from,
+                            run_id,
+                            split_hash,
+                        ],
+                    )
 
-                for candidate, relationship in relationships:
-                    if relationship == Relationship.SUPERSEDES:
-                        self.invalidate_fact(candidate.id, valid_from, new_fact.id)
-                        superseded_ids.append(candidate.id)
+                    split_embedding = (
+                        self.embedder.embed(split_content, prefix="search_document: ")
+                        if split_content != content
+                        else embedding
+                    )
+                    self.db.execute(
+                        "INSERT INTO facts_vec (fact_id, embedding) VALUES (?, ?)",
+                        [new_id, split_embedding],
+                    )
+                    self.db.execute(
+                        "INSERT INTO facts_fts (fact_id, content, scope) VALUES (?, ?, ?)",
+                        [new_id, split_content, scope],
+                    )
+                    new_ids.append(new_id)
+
+                    for old_id in superseded_ids:
+                        self.db.execute(
+                            "INSERT OR IGNORE INTO fact_lineage (predecessor_id, successor_id) VALUES (?, ?)",
+                            [old_id, new_id],
+                        )
+                        self.invalidate_fact(old_id, valid_to=valid_from)
+
                 self.db.commit()
                 logger.info(
-                    "Fact %s created, superseded %d facts", new_fact.id, len(superseded_ids)
+                    f"Consolidation event {uuid7()} created {len(splits)} facts, superseded {len(superseded_ids)} facts"
                 )
             except Exception as e:
                 self.db.execute("ROLLBACK")
-                logger.error("Transaction rolled back due to error: %s", e)
+                logger.error(f"Transaction rolled back due to error: {e}")
                 raise e
+        return new_ids
 
-        return superseded_ids
+    def invalidate_fact(self, fact_id: str, valid_to: str) -> int:
+        cursor = self.db.execute(
+            "UPDATE facts SET valid_to = ? WHERE id = ? AND valid_to IS NULL",
+            [valid_to, fact_id],
+        )
+        return cursor.rowcount
 
     def write_trajectory(self, trajectory_json: str, run_id: str) -> tuple[list[dict], list[dict]]:
-        """
-        Parses and writes trajectory steps to the database.
-        Returns a tuple of (saved, errors).
-        """
         saved = []
         errors = []
         try:

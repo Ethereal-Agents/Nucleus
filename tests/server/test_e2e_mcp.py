@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -10,7 +10,7 @@ os.environ["SWARM_MEMORY_DB_PATH"] = ":memory:"
 
 import swarm_memory.server.mcp_server as mcp_module
 from swarm_memory.core.embeddings import EmbeddingModel
-from swarm_memory.ingestion.supersession import ContradictionDetector
+from swarm_memory.ingestion.supersession import ConsolidationEngine
 from swarm_memory.ingestion.writer import FactWriter
 from swarm_memory.retrieval.reader import FactReader
 from swarm_memory.server.mcp_server import (
@@ -41,6 +41,15 @@ def e2e_reset(e2e_embedder):
     mcp_module.db = get_initialized_db(":memory:")
     mcp_module.embedder = e2e_embedder
 
+    # Inject dummy runs for anonymous testing
+    dummy_runs = ["dummy_run", "new1", "new2", "new_run", "new_run_x", "new", "run3", "r1", "r2", "r3"]
+    for d in dummy_runs:
+        mcp_module.db.execute(
+            "INSERT INTO runs (id, repo, agent_id, arm, started_at) VALUES (?, ?, ?, ?, ?)",
+            [d, "dummy_repo", "dummy_test", "arm3", datetime.now(UTC).isoformat()]
+        )
+    mcp_module.db.commit()
+
     # Check if vec is available, if not skip test requiring it
     try:
         mcp_module.db.execute("SELECT vec_version()")
@@ -49,12 +58,30 @@ def e2e_reset(e2e_embedder):
         vec_available = False
         pytest.skip("sqlite-vec is not available in this environment. E2E tests require it.")
 
-    # Mock Detector to return empty relationships by default
-    mcp_module.detector = MagicMock(spec=ContradictionDetector)
-    mcp_module.detector.detect_contradictions = AsyncMock(side_effect=lambda *args, **kwargs: [])
+    # Mock consolidation engine: always treat new facts as independent so
+    # semantically distinct facts are not accidentally superseded. Tests that
+    # specifically need supersession behaviour use e2e_reset_with_llm instead.
+    async def mock_consolidate(new_content, existing_facts):
+        from swarm_memory.ingestion.supersession import ConsolidationResult
+        return ConsolidationResult(
+            status="independent",
+            superseded_ids=[],
+            merged_text=new_content,
+        )
+
+    async def mock_split_fact(content):
+        # Sentence-boundary split fallback: keeps long content searchable in tests.
+        import re as _re
+
+        sentences = [s.strip() for s in _re.split(r"(?<=[.!?])\s+", content) if s.strip()]
+        return sentences if sentences else [content]
+
+    mcp_module.engine = AsyncMock(spec=ConsolidationEngine)
+    mcp_module.engine.consolidate_facts.side_effect = mock_consolidate
+    mcp_module.engine.split_fact.side_effect = mock_split_fact
 
     mcp_module.writer = FactWriter(
-        db=mcp_module.db, embedder=mcp_module.embedder, detector=mcp_module.detector
+        db=mcp_module.db, embedder=mcp_module.embedder, engine=mcp_module.engine
     )
     mcp_module.reader = FactReader(
         conn=mcp_module.db, embedder=mcp_module.embedder, vec_available=vec_available
@@ -65,12 +92,19 @@ def e2e_reset(e2e_embedder):
 
 @pytest.fixture
 def e2e_reset_with_llm(e2e_embedder):
-    """Resets module-level singletons with real embedder AND real ContradictionDetector."""
+    """Resets module-level singletons with real embedder AND real ConsolidationEngine."""
     mcp_module.db = get_initialized_db(":memory:")
     mcp_module.embedder = e2e_embedder
-    mcp_module.detector = ContradictionDetector()
+
+    # Inject a dummy run for anonymous testing
+    mcp_module.db.execute(
+        "INSERT INTO runs (id, repo, agent_id, arm, started_at) VALUES (?, ?, ?, ?, ?)",
+        ["dummy_run", "dummy_repo", "dummy_test", "arm3", datetime.now(UTC).isoformat()]
+    )
+    mcp_module.db.commit()
+    mcp_module.engine = ConsolidationEngine()
     mcp_module.writer = FactWriter(
-        db=mcp_module.db, embedder=mcp_module.embedder, detector=mcp_module.detector
+        db=mcp_module.db, embedder=mcp_module.embedder, engine=mcp_module.engine
     )
     # Check vec availability
     try:
@@ -160,7 +194,7 @@ async def test_write_creates_fact_in_db(e2e_reset):
     res = await memory_write(content="Test content", scope="repo", run_id=run_id, confidence=0.8)
     assert res["status"] == "created"
 
-    row = mcp_module.db.execute("SELECT * FROM facts WHERE id = ?", [res["fact_id"]]).fetchone()
+    row = mcp_module.db.execute("SELECT * FROM facts WHERE id = ?", [res["fact_ids"][0]]).fetchone()
     assert row["content"] == "Test content"
     assert row["scope"] == "repo"
     assert row["confidence"] == 0.8
@@ -174,7 +208,7 @@ async def test_write_creates_embedding_in_vec(e2e_reset):
     res = await memory_write(content="Test content", scope="repo", run_id=run_id)
 
     row = mcp_module.db.execute(
-        "SELECT * FROM facts_vec WHERE fact_id = ?", [res["fact_id"]]
+        "SELECT * FROM facts_vec WHERE fact_id = ?", [res["fact_ids"][0]]
     ).fetchone()
     assert row is not None
 
@@ -186,7 +220,7 @@ async def test_write_creates_fts_entry(e2e_reset):
     res = await memory_write(content="Test content fts", scope="repo", run_id=run_id)
 
     row = mcp_module.db.execute(
-        "SELECT * FROM facts_fts WHERE fact_id = ?", [res["fact_id"]]
+        "SELECT * FROM facts_fts WHERE fact_id = ?", [res["fact_ids"][0]]
     ).fetchone()
     assert row["content"] == "Test content fts"
 
@@ -200,7 +234,7 @@ async def test_write_all_fact_types(e2e_reset):
     for ft in types:
         res = await memory_write(content=f"Fact {ft}", scope="repo", run_id=run_id, fact_type=ft)
         row = mcp_module.db.execute(
-            "SELECT fact_type FROM facts WHERE id = ?", [res["fact_id"]]
+            "SELECT fact_type FROM facts WHERE id = ?", [res["fact_ids"][0]]
         ).fetchone()
         assert row["fact_type"] == ft
 
@@ -214,7 +248,7 @@ async def test_write_duplicate_content_returns_duplicate(e2e_reset):
 
     res2 = await memory_write(content="Same content", scope="repo", run_id=run_id)
     assert res2["status"] == "duplicate"
-    assert res1["fact_id"] == res2["fact_id"]
+    assert res1["fact_ids"][0] == res2["fact_ids"][0]
 
 
 @pytest.mark.asyncio
@@ -224,15 +258,15 @@ async def test_write_with_supersedes_hint_invalidates_old(e2e_reset):
     res1 = await memory_write(content="Old fact", scope="repo", run_id=run_id)
 
     res2 = await memory_write(
-        content="New fact", scope="repo", run_id=run_id, supersedes_hint=res1["fact_id"]
+        content="New fact", scope="repo", run_id=run_id, supersedes_hint=res1["fact_ids"][0]
     )
-    assert res1["fact_id"] in res2["superseded_ids"]
+    assert res1["fact_ids"][0] in res2["superseded_ids"]
 
     row1 = mcp_module.db.execute(
-        "SELECT valid_to, superseded_by FROM facts WHERE id = ?", [res1["fact_id"]]
+        "SELECT valid_to FROM facts WHERE id = ?", [res1["fact_ids"][0]]
     ).fetchone()
     assert row1["valid_to"] is not None
-    assert row1["superseded_by"] == res2["fact_id"]
+    # Lineage is tracked in fact_lineage M2M table, not superseded_by column
 
 
 @pytest.mark.asyncio
@@ -255,7 +289,7 @@ async def test_write_custom_valid_from(e2e_reset):
     res = await memory_write(content="Fact", scope="repo", run_id=run_id, valid_from=custom_date)
 
     row = mcp_module.db.execute(
-        "SELECT valid_from FROM facts WHERE id = ?", [res["fact_id"]]
+        "SELECT valid_from FROM facts WHERE id = ?", [res["fact_ids"][0]]
     ).fetchone()
     assert row["valid_from"] == expected_db_date
 
@@ -274,7 +308,7 @@ async def test_write_confidence_persists(e2e_reset):
     run_id = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     res = await memory_write(content="Fact", scope="repo", run_id=run_id, confidence=0.42)
     row = mcp_module.db.execute(
-        "SELECT confidence FROM facts WHERE id = ?", [res["fact_id"]]
+        "SELECT confidence FROM facts WHERE id = ?", [res["fact_ids"][0]]
     ).fetchone()
     # Using float comparison with tolerance if needed, or exact if SQLite preserves it well enough
     assert abs(row["confidence"] - 0.42) < 0.001
@@ -294,7 +328,7 @@ async def test_search_finds_semantically_similar_fact(e2e_reset):
     )
 
     # Query with different phrasing to test dense search
-    res = memory_search(query="How does authentication work?", scope="repo", top_k=5)
+    res = memory_search(run_id="dummy_run", query="How does authentication work?", scope="repo", top_k=5)
     assert "JWT tokens" in res
 
 
@@ -308,7 +342,7 @@ async def test_search_keyword_match_via_fts(e2e_reset):
         run_id=run_id,
     )
 
-    res = memory_search(query="PostgreSQL", scope="repo", top_k=5)
+    res = memory_search(run_id="dummy_run", query="PostgreSQL", scope="repo", top_k=5)
     assert "PostgreSQL" in res
 
 
@@ -321,7 +355,7 @@ async def test_search_hybrid_fusion_both_paths(e2e_reset):
     )
     await memory_write(content="Caching is done in-memory via Redis.", scope="repo", run_id=run_id)
 
-    res = memory_search(query="Redis caching for data", top_k=5)
+    res = memory_search(run_id="dummy_run", query="Redis caching for data", top_k=5)
     assert "Redis" in res
 
 
@@ -332,7 +366,7 @@ async def test_search_scope_hierarchy_resolution(e2e_reset):
     await memory_write(content="Auth fact", scope="repo/src/auth", run_id=run_id)
 
     # Search in parent scope
-    res = memory_search(query="Auth", scope="repo/src", top_k=5)
+    res = memory_search(run_id="dummy_run", query="Auth", scope="repo/src", top_k=5)
     assert "Auth fact" in res
 
 
@@ -343,7 +377,7 @@ async def test_search_scope_isolation(e2e_reset):
     await memory_write(content="Auth fact", scope="repo/src/auth", run_id=run_id)
 
     # Search in sibling scope
-    res = memory_search(query="Auth", scope="repo/src/payments", top_k=5)
+    res = memory_search(run_id="dummy_run", query="Auth", scope="repo/src/payments", top_k=5)
     assert "no relevant facts found" in res
 
 
@@ -353,7 +387,7 @@ async def test_search_no_scope_searches_globally(e2e_reset):
     run_id = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     await memory_write(content="Secret global fact", scope="some/weird/path", run_id=run_id)
 
-    res = memory_search(query="Secret", top_k=5)
+    res = memory_search(run_id="dummy_run", query="Secret", top_k=5)
     assert "Secret global fact" in res
 
 
@@ -364,7 +398,7 @@ async def test_search_respects_top_k(e2e_reset):
     for i in range(5):
         await memory_write(content=f"Fact number {i}", scope="repo", run_id=run_id)
 
-    res = memory_search(query="Fact number", top_k=2)
+    res = memory_search(run_id="dummy_run", query="Fact number", top_k=2)
     # Check lines starting with "[insight]" or similar fact types
     fact_count = res.count("[insight]")
     assert fact_count <= 2
@@ -384,17 +418,13 @@ async def test_search_session_dedup_filters_seen(e2e_reset):
 
 
 @pytest.mark.asyncio
-async def test_search_without_run_id_no_dedup(e2e_reset):
+async def test_search_without_run_id_raises(e2e_reset):
     # E2E-28
     run_id = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     await memory_write(content="Dedup test fact", scope="repo", run_id=run_id)
 
-    res1 = memory_search(query="Dedup", top_k=5)
-    assert "Dedup test fact" in res1
-
-    res2 = memory_search(query="Dedup", top_k=5)
-    assert "Dedup test fact" in res2
-
+    with pytest.raises(ValueError, match="run_id is required"):
+        memory_search(run_id="", query="Dedup", top_k=5)
 
 @pytest.mark.asyncio
 async def test_search_gotcha_priority(e2e_reset):
@@ -410,7 +440,7 @@ async def test_search_gotcha_priority(e2e_reset):
         fact_type="gotcha",
     )
 
-    res = memory_search(query="IDs", top_k=5)
+    res = memory_search(run_id="dummy_run", query="IDs", top_k=5)
     # Gotcha should be formatted with '⚠' and appear before the insight
     idx_gotcha = res.find("⚠")
     idx_insight = res.find("[insight]")
@@ -426,7 +456,7 @@ async def test_search_fact_type_filter(e2e_reset):
     await memory_write(content="Dependency A", scope="repo", run_id=run_id, fact_type="dependency")
     await memory_write(content="Insight B", scope="repo", run_id=run_id, fact_type="insight")
 
-    res = memory_search(query="", fact_type="dependency", top_k=5)
+    res = memory_search(run_id="dummy_run", query="", fact_type="dependency", top_k=5)
     assert "Dependency A" in res
     assert "Insight B" not in res
 
@@ -437,7 +467,7 @@ async def test_search_returns_formatted_string(e2e_reset):
     run_id = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     await memory_write(content="Format test fact", scope="repo/path", run_id=run_id)
 
-    res = memory_search(query="Format", scope="repo/path", top_k=5)
+    res = memory_search(run_id="dummy_run", query="Format", scope="repo/path", top_k=5)
     assert res.startswith("[MEMORY HUB —")
     assert "Format test fact" in res
     assert "id:" in res
@@ -454,9 +484,9 @@ async def test_invalidate_sets_valid_to(e2e_reset):
     # E2E-40
     run_id = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     res = await memory_write(content="To invalidate", scope="repo", run_id=run_id)
-    fact_id = res["fact_id"]
+    fact_id = res["fact_ids"][0]
 
-    memory_invalidate(fact_id=fact_id, reason="Testing")
+    memory_invalidate(run_id="dummy_run", fact_id=fact_id, reason="Testing")
     row = mcp_module.db.execute("SELECT valid_to FROM facts WHERE id = ?", [fact_id]).fetchone()
     assert row["valid_to"] is not None
 
@@ -467,10 +497,10 @@ async def test_invalidate_hides_from_search(e2e_reset):
     run_id = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     res = await memory_write(content="To invalidate hide", scope="repo", run_id=run_id)
 
-    search1 = memory_search(query="hide", top_k=5)
+    search1 = memory_search(run_id="dummy_run", query="hide", top_k=5)
     assert "To invalidate hide" in search1
 
-    memory_invalidate(fact_id=res["fact_id"], reason="Testing")
+    memory_invalidate(run_id="dummy_run", fact_id=res["fact_ids"][0], reason="Testing")
 
     search2 = memory_search(query="hide", run_id="new", top_k=5)
     assert "To invalidate hide" not in search2
@@ -478,7 +508,7 @@ async def test_invalidate_hides_from_search(e2e_reset):
 
 def test_invalidate_nonexistent_returns_error(e2e_reset):
     # E2E-42
-    res = memory_invalidate(fact_id="not-an-id", reason="Testing")
+    res = memory_invalidate(run_id="dummy_run", fact_id="not-an-id", reason="Testing")
     assert res["status"] == "error"
 
 
@@ -487,12 +517,12 @@ async def test_invalidate_already_invalid_returns_error(e2e_reset):
     # E2E-43
     run_id = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     res = await memory_write(content="Double invalidate", scope="repo", run_id=run_id)
-    fact_id = res["fact_id"]
+    fact_id = res["fact_ids"][0]
 
-    res1 = memory_invalidate(fact_id=fact_id, reason="Testing")
+    res1 = memory_invalidate(run_id="dummy_run", fact_id=fact_id, reason="Testing")
     assert res1["status"] == "invalidated"
 
-    res2 = memory_invalidate(fact_id=fact_id, reason="Testing 2")
+    res2 = memory_invalidate(run_id="dummy_run", fact_id=fact_id, reason="Testing 2")
     assert res2["status"] == "error"
 
 
@@ -501,10 +531,10 @@ async def test_invalidate_custom_valid_to(e2e_reset):
     # E2E-44
     run_id = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     res = await memory_write(content="Custom valid to", scope="repo", run_id=run_id)
-    fact_id = res["fact_id"]
+    fact_id = res["fact_ids"][0]
 
     custom_time = "2024-05-05T00:00:00Z"
-    memory_invalidate(fact_id=fact_id, reason="Testing", valid_to=custom_time)
+    memory_invalidate(run_id="dummy_run", fact_id=fact_id, reason="Testing", valid_to=custom_time)
     row = mcp_module.db.execute("SELECT valid_to FROM facts WHERE id = ?", [fact_id]).fetchone()
     assert row["valid_to"] == custom_time
 
@@ -516,13 +546,13 @@ async def test_invalidate_custom_valid_to(e2e_reset):
 
 def test_list_runs_empty(e2e_reset):
     # E2E-50
-    assert len(memory_list_runs(repo="empty")) == 0
+    assert len(memory_list_runs(run_id="dummy_run", repo="empty")) == 0
 
 
 def test_list_runs_returns_all_fields(e2e_reset):
     # E2E-51
     memory_begin_run(repo="list_repo", agent_id="a1", branch="main")
-    runs = memory_list_runs(repo="list_repo")
+    runs = memory_list_runs(run_id="dummy_run", repo="list_repo")
     assert len(runs) == 1
     assert "id" in runs[0]
     assert "agent_id" in runs[0]
@@ -535,7 +565,7 @@ def test_list_runs_repo_filter(e2e_reset):
     # E2E-52
     memory_begin_run(repo="r1", agent_id="a1")
     memory_begin_run(repo="r2", agent_id="a1")
-    runs = memory_list_runs(repo="r1")
+    runs = memory_list_runs(run_id="dummy_run", repo="r1")
     assert len(runs) == 1
     assert runs[0]["repo"] == "r1"
 
@@ -545,7 +575,7 @@ def test_list_runs_limit(e2e_reset):
     memory_begin_run(repo="r1", agent_id="a1")
     memory_begin_run(repo="r1", agent_id="a2")
     memory_begin_run(repo="r1", agent_id="a3")
-    runs = memory_list_runs(repo="r1", limit=2)
+    runs = memory_list_runs(run_id="dummy_run", repo="r1", limit=2)
     assert len(runs) == 2
 
 
@@ -557,7 +587,7 @@ def test_list_runs_ordered_by_recency(e2e_reset):
     time.sleep(0.01)
     res2 = memory_begin_run(repo="r1", agent_id="a2")
 
-    runs = memory_list_runs(repo="r1")
+    runs = memory_list_runs(run_id="dummy_run", repo="r1")
     assert runs[0]["id"] == res2["run_id"]
     assert runs[1]["id"] == res1["run_id"]
 
@@ -610,7 +640,7 @@ async def test_end_run_extracts_facts_from_summary(e2e_reset):
     assert res["status"] == "completed"
     assert res["facts_saved"] == 1
 
-    search_res = memory_search(query="Summary fact", top_k=5)
+    search_res = memory_search(run_id="dummy_run", query="Summary fact", top_k=5)
     assert "Summary fact" in search_res
 
 
@@ -683,10 +713,10 @@ async def test_full_agent_lifecycle(e2e_reset):
     await memory_write(content="F2", scope="repo", run_id=run_id)
     await memory_write(content="F3", scope="repo", run_id=run_id)
 
-    search_res = memory_search(query="F", top_k=5)
+    search_res = memory_search(run_id="dummy_run", query="F", top_k=5)
     assert "F1" in search_res
 
-    memory_invalidate(fact_id=res1["fact_id"], reason="Del")
+    memory_invalidate(run_id="dummy_run", fact_id=res1["fact_ids"][0], reason="Del")
 
     search_res2 = memory_search(query="F", run_id="new_run_x", top_k=5)
     assert "F1" not in search_res2
@@ -695,10 +725,10 @@ async def test_full_agent_lifecycle(e2e_reset):
     summary = json.dumps([{"content": "Summary F4", "scope": "repo", "fact_type": "insight"}])
     await memory_end_run(run_id=run_id, summary=summary)
 
-    runs = memory_list_runs(repo="e2e_lifecycle")
+    runs = memory_list_runs(run_id="dummy_run", repo="e2e_lifecycle")
     assert any(r["id"] == run_id for r in runs)
 
-    search_res3 = memory_search(query="F4", top_k=5)
+    search_res3 = memory_search(run_id="dummy_run", query="F4", top_k=5)
     assert "Summary F4" in search_res3
 
 
@@ -708,9 +738,11 @@ async def test_supersession_chain_3_deep(e2e_reset):
     run_id = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     f_a = await memory_write(content="F A", scope="repo", run_id=run_id)
     f_b = await memory_write(
-        content="F B", scope="repo", run_id=run_id, supersedes_hint=f_a["fact_id"]
+        content="F B", scope="repo", run_id=run_id, supersedes_hint=f_a["fact_ids"][0]
     )
-    await memory_write(content="F C", scope="repo", run_id=run_id, supersedes_hint=f_b["fact_id"])
+    await memory_write(
+        content="F C", scope="repo", run_id=run_id, supersedes_hint=f_b["fact_ids"][0]
+    )
 
     res = memory_search(query="F", run_id="new1", top_k=5)
     assert "F A" not in res
@@ -732,7 +764,7 @@ async def test_time_travel_as_of(e2e_reset):
         content="New TT",
         scope="repo",
         run_id=run_id,
-        supersedes_hint=f1["fact_id"],
+        supersedes_hint=f1["fact_ids"][0],
         valid_from=t1.isoformat(),
     )
 
@@ -755,7 +787,7 @@ async def test_multi_agent_concurrent_writes(e2e_reset):
     await memory_write(content="Agent 1 fact", scope="repo", run_id=r1)
     await memory_write(content="Agent 2 fact", scope="repo", run_id=r2)
 
-    s = memory_search(query="Agent", top_k=5)
+    s = memory_search(run_id="dummy_run", query="Agent", top_k=5)
     assert "Agent 1 fact" in s
     assert "Agent 2 fact" in s
 
@@ -767,10 +799,10 @@ async def test_cross_scope_visibility(e2e_reset):
     await memory_write(content="Auth fact", scope="repo/auth", run_id=r1)
     await memory_write(content="DB fact", scope="repo/db", run_id=r1)
 
-    s_repo = memory_search(query="fact", scope="repo", top_k=5)
+    s_repo = memory_search(run_id="dummy_run", query="fact", scope="repo", top_k=5)
     assert "Auth fact" in s_repo and "DB fact" in s_repo
 
-    s_auth = memory_search(query="fact", scope="repo/auth", top_k=5)
+    s_auth = memory_search(run_id="new1", query="fact", scope="repo/auth", top_k=5)
     assert "Auth fact" in s_auth
     assert "DB fact" not in s_auth
 
@@ -817,7 +849,7 @@ async def test_duplicate_write_is_idempotent(e2e_reset):
     w2 = await memory_write(content="Idempotent", scope="repo", run_id=r1)
     w3 = await memory_write(content="Idempotent", scope="repo", run_id=r1)
 
-    assert w1["fact_id"] == w2["fact_id"] == w3["fact_id"]
+    assert w1["fact_ids"][0] == w2["fact_ids"][0] == w3["fact_ids"][0]
 
     c = mcp_module.db.execute(
         "SELECT COUNT(*) as c FROM facts WHERE content = 'Idempotent'"
@@ -834,7 +866,7 @@ async def test_duplicate_write_is_idempotent(e2e_reset):
 @pytest.mark.asyncio
 async def test_llm_detects_contradiction(e2e_reset_with_llm):
     # E2E-80
-    mcp_module.detector.llm_service.model_name = "openrouter/openai/gpt-4o-mini"
+    mcp_module.engine.llm_service.model_name = "openrouter/openai/gpt-4o-mini"
     r1 = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     f1 = await memory_write(content="The web server runs on port 8080", scope="repo", run_id=r1)
 
@@ -845,9 +877,9 @@ async def test_llm_detects_contradiction(e2e_reset_with_llm):
         run_id=r1,
     )
 
-    assert f1["fact_id"] in f2["superseded_ids"]
+    assert f1["fact_ids"][0] in f2["superseded_ids"]
     row = mcp_module.db.execute(
-        "SELECT valid_to FROM facts WHERE id = ?", [f1["fact_id"]]
+        "SELECT valid_to FROM facts WHERE id = ?", [f1["fact_ids"][0]]
     ).fetchone()
     assert row["valid_to"] is not None
 
@@ -856,14 +888,14 @@ async def test_llm_detects_contradiction(e2e_reset_with_llm):
 @pytest.mark.asyncio
 async def test_llm_independent_facts_coexist(e2e_reset_with_llm):
     # E2E-81
-    mcp_module.detector.llm_service.model_name = "openrouter/openai/gpt-4o-mini"
+    mcp_module.engine.llm_service.model_name = "openrouter/openai/gpt-4o-mini"
     r1 = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     f1 = await memory_write(content="Authentication uses JWT", scope="repo", run_id=r1)
     f2 = await memory_write(content="The database is PostgreSQL", scope="repo", run_id=r1)
 
-    assert f1["fact_id"] not in f2["superseded_ids"]
+    assert f1["fact_ids"][0] not in f2["superseded_ids"]
     row = mcp_module.db.execute(
-        "SELECT valid_to FROM facts WHERE id = ?", [f1["fact_id"]]
+        "SELECT valid_to FROM facts WHERE id = ?", [f1["fact_ids"][0]]
     ).fetchone()
     assert row["valid_to"] is None
 
@@ -872,7 +904,7 @@ async def test_llm_independent_facts_coexist(e2e_reset_with_llm):
 @pytest.mark.asyncio
 async def test_llm_refines_fact_keeps_both(e2e_reset_with_llm):
     # E2E-82
-    mcp_module.detector.llm_service.model_name = "openrouter/openai/gpt-4o-mini"
+    mcp_module.engine.llm_service.model_name = "openrouter/openai/gpt-4o-mini"
     r1 = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     f1 = await memory_write(content="API uses REST", scope="repo", run_id=r1)
     f2 = await memory_write(
@@ -881,11 +913,13 @@ async def test_llm_refines_fact_keeps_both(e2e_reset_with_llm):
         run_id=r1,
     )
 
-    assert f1["fact_id"] not in f2["superseded_ids"]
+    # A refinement SHOULD supersede the original less-precise fact.
+    # "API uses REST following JSON:API spec" logically supersedes "API uses REST".
+    assert f1["fact_ids"][0] in f2["superseded_ids"]
     row = mcp_module.db.execute(
-        "SELECT valid_to FROM facts WHERE id = ?", [f1["fact_id"]]
+        "SELECT valid_to FROM facts WHERE id = ?", [f1["fact_ids"][0]]
     ).fetchone()
-    assert row["valid_to"] is None
+    assert row["valid_to"] is not None  # old fact was invalidated
 
 
 # ==========================================
@@ -896,7 +930,7 @@ async def test_llm_refines_fact_keeps_both(e2e_reset_with_llm):
 @pytest.mark.asyncio
 async def test_search_empty_db(e2e_reset):
     # E2E-90
-    res = memory_search(query="anything", top_k=5)
+    res = memory_search(run_id="dummy_run", query="anything", top_k=5)
     assert "no relevant facts found" in res
 
 
@@ -906,7 +940,7 @@ async def test_write_unicode_content(e2e_reset):
     r1 = memory_begin_run(repo="repo", agent_id="a1")["run_id"]
     await memory_write(content="Unicode 🔧 数据库 café", scope="repo", run_id=r1)
 
-    res = memory_search(query="Unicode café", top_k=5)
+    res = memory_search(run_id="dummy_run", query="Unicode café", top_k=5)
     assert "数据库" in res
 
 
@@ -917,7 +951,7 @@ async def test_write_very_long_content(e2e_reset):
     long_content = "Word " * 1000
     await memory_write(content=long_content, scope="repo", run_id=r1)
 
-    res = memory_search(query="Word", top_k=5)
+    res = memory_search(run_id="dummy_run", query="Word", top_k=5)
     assert "Word" in res
     assert len(res) > 4000
 
@@ -929,7 +963,7 @@ async def test_search_all_stopwords_query(e2e_reset):
     await memory_write(content="Just a standard fact here", scope="repo", run_id=r1)
 
     # "what is the" should strip down to empty for FTS, testing fallback
-    res = memory_search(query="what is the", top_k=5)
+    res = memory_search(run_id="dummy_run", query="what is the", top_k=5)
     # The dense search should still return it if it's the only fact and we search without dedup
     assert "standard fact" in res
 
@@ -948,5 +982,5 @@ async def test_end_run_summary_with_trailing_comma(e2e_reset):
     assert res["status"] == "completed"
     assert res["facts_saved"] == 1
 
-    search_res = memory_search(query="Trailing comma", top_k=5)
+    search_res = memory_search(run_id="dummy_run", query="Trailing comma", top_k=5)
     assert "Trailing comma fact" in search_res

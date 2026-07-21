@@ -281,7 +281,7 @@ class FactReader:
             time_filter = "AND f.valid_from <= ? AND (f.valid_to IS NULL OR f.valid_to > ?)"
             time_params = [as_of, as_of]
         else:
-            time_filter = "AND f.valid_to IS NULL AND f.superseded_by IS NULL"
+            time_filter = "AND f.valid_to IS NULL"
             time_params = []
 
         if fact_type:
@@ -349,7 +349,7 @@ class FactReader:
             time_filter = "AND f.valid_from <= ? AND (f.valid_to IS NULL OR f.valid_to > ?)"
             time_params = [as_of, as_of]
         else:
-            time_filter = "AND f.valid_to IS NULL AND f.superseded_by IS NULL"
+            time_filter = "AND f.valid_to IS NULL"
             time_params = []
 
         with timed("bm25_search"):
@@ -418,7 +418,6 @@ class FactReader:
                 SELECT * FROM facts
                 WHERE id IN ({placeholders})
                   AND valid_to IS NULL
-                  AND superseded_by IS NULL
                 """,
                 fact_ids,
             ).fetchall()
