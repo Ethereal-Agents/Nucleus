@@ -179,7 +179,10 @@ async def test_e2e_scale_ingestion():
     # Dense / Semantic Pathway: Conceptual query with no keyword overlap
     # Fact from Phase 1: "Infrastructure is hosted on AWS."
     read_res_dense = mcp_module.memory_search(
-        query="Where do we deploy our cloud servers?", run_id=run_id_6, scope="scale_repo/arch/infra", top_k=2
+        query="Where do we deploy our cloud servers?",
+        run_id=run_id_6,
+        scope="scale_repo/arch/infra",
+        top_k=2,
     )
     assert "AWS" in read_res_dense, f"Dense semantic search failed: {read_res_dense}"
 

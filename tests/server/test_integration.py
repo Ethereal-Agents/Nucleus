@@ -29,12 +29,24 @@ from swarm_memory.store.db import get_initialized_db
 def reset_mcp_state():
     """Reinitialize all module-level singletons to ensure clean state per test."""
     mcp_module.db = get_initialized_db(":memory:")
-    
-    dummy_runs = ["dummy_run", "new1", "new2", "new_run", "new_run_x", "new", "run3", "run4", "r1", "r2", "r3"]
+
+    dummy_runs = [
+        "dummy_run",
+        "new1",
+        "new2",
+        "new_run",
+        "new_run_x",
+        "new",
+        "run3",
+        "run4",
+        "r1",
+        "r2",
+        "r3",
+    ]
     for d in dummy_runs:
         mcp_module.db.execute(
             "INSERT INTO runs (id, repo, agent_id, arm, started_at) VALUES (?, ?, ?, ?, ?)",
-            [d, "dummy_repo", "dummy_test", "arm3", datetime.now(UTC).isoformat()]
+            [d, "dummy_repo", "dummy_test", "arm3", datetime.now(UTC).isoformat()],
         )
     mcp_module.db.commit()
 
@@ -49,6 +61,7 @@ def reset_mcp_state():
     # need real supersession use monkeypatch to restore the real engine.
     async def mock_consolidate(new_content, existing_facts):
         from swarm_memory.ingestion.supersession import ConsolidationResult
+
         return ConsolidationResult(
             status="independent",
             superseded_ids=[],

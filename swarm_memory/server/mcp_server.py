@@ -36,6 +36,7 @@ session_manager = SessionManager()
 
 mcp = FastMCP("SwarmMemory")
 
+
 def _get_arm_for_run(run_id: str) -> str:
     row = db.execute("SELECT arm FROM runs WHERE id = ?", [run_id]).fetchone()
     if not row:

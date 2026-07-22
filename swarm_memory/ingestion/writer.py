@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 import swarm_memory.core.config as config
 from swarm_memory.core.embeddings import EmbeddingModel
-from swarm_memory.core.models import Fact, WriteResult, WriteStatus, uuid7, ConsolidationStatus
+from swarm_memory.core.models import ConsolidationStatus, Fact, WriteResult, WriteStatus, uuid7
 from swarm_memory.core.utils import timed
 from swarm_memory.ingestion.supersession import ConsolidationEngine
 
@@ -101,10 +101,10 @@ class FactWriter:
             if existing:
                 existing_id = existing["id"]
                 return WriteResult(
-                    fact_ids=[existing_id], 
-                    superseded_ids=[], 
+                    fact_ids=[existing_id],
+                    superseded_ids=[],
                     status=WriteStatus.DUPLICATE,
-                    message=f"Duplicate of existing fact {existing_id} (exact match). No new fact created."
+                    message=f"Duplicate of existing fact {existing_id} (exact match). No new fact created.",
                 )
 
         hint_fact: Fact | None = None
@@ -140,14 +140,18 @@ class FactWriter:
         if status == ConsolidationStatus.DUPLICATE:
             existing_id = superseded_ids[0] if superseded_ids else None
             return WriteResult(
-                fact_ids=[existing_id] if existing_id else [], 
-                superseded_ids=[], 
+                fact_ids=[existing_id] if existing_id else [],
+                superseded_ids=[],
                 status=WriteStatus.DUPLICATE,
-                message=f"Duplicate of existing fact {existing_id}. No new fact created."
+                message=f"Duplicate of existing fact {existing_id}. No new fact created.",
             )
 
         # Map to WriteStatus for remaining logic
-        write_status = WriteStatus.CREATED if status == ConsolidationStatus.INDEPENDENT else WriteStatus.CONSOLIDATED
+        write_status = (
+            WriteStatus.CREATED
+            if status == ConsolidationStatus.INDEPENDENT
+            else WriteStatus.CONSOLIDATED
+        )
 
         if hint_fact and hint_fact.id not in superseded_ids:
             superseded_ids.append(hint_fact.id)
@@ -183,10 +187,7 @@ class FactWriter:
             message = f"Fact processed with status: {write_status}"
 
         return WriteResult(
-            fact_ids=new_ids, 
-            superseded_ids=superseded_ids, 
-            status=write_status,
-            message=message
+            fact_ids=new_ids, superseded_ids=superseded_ids, status=write_status, message=message
         )
 
     def _execute_write_transaction(

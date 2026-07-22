@@ -42,11 +42,22 @@ def e2e_reset(e2e_embedder):
     mcp_module.embedder = e2e_embedder
 
     # Inject dummy runs for anonymous testing
-    dummy_runs = ["dummy_run", "new1", "new2", "new_run", "new_run_x", "new", "run3", "r1", "r2", "r3"]
+    dummy_runs = [
+        "dummy_run",
+        "new1",
+        "new2",
+        "new_run",
+        "new_run_x",
+        "new",
+        "run3",
+        "r1",
+        "r2",
+        "r3",
+    ]
     for d in dummy_runs:
         mcp_module.db.execute(
             "INSERT INTO runs (id, repo, agent_id, arm, started_at) VALUES (?, ?, ?, ?, ?)",
-            [d, "dummy_repo", "dummy_test", "arm3", datetime.now(UTC).isoformat()]
+            [d, "dummy_repo", "dummy_test", "arm3", datetime.now(UTC).isoformat()],
         )
     mcp_module.db.commit()
 
@@ -63,6 +74,7 @@ def e2e_reset(e2e_embedder):
     # specifically need supersession behaviour use e2e_reset_with_llm instead.
     async def mock_consolidate(new_content, existing_facts):
         from swarm_memory.ingestion.supersession import ConsolidationResult
+
         return ConsolidationResult(
             status="independent",
             superseded_ids=[],
@@ -99,7 +111,7 @@ def e2e_reset_with_llm(e2e_embedder):
     # Inject a dummy run for anonymous testing
     mcp_module.db.execute(
         "INSERT INTO runs (id, repo, agent_id, arm, started_at) VALUES (?, ?, ?, ?, ?)",
-        ["dummy_run", "dummy_repo", "dummy_test", "arm3", datetime.now(UTC).isoformat()]
+        ["dummy_run", "dummy_repo", "dummy_test", "arm3", datetime.now(UTC).isoformat()],
     )
     mcp_module.db.commit()
     mcp_module.engine = ConsolidationEngine()
@@ -328,7 +340,9 @@ async def test_search_finds_semantically_similar_fact(e2e_reset):
     )
 
     # Query with different phrasing to test dense search
-    res = memory_search(run_id="dummy_run", query="How does authentication work?", scope="repo", top_k=5)
+    res = memory_search(
+        run_id="dummy_run", query="How does authentication work?", scope="repo", top_k=5
+    )
     assert "JWT tokens" in res
 
 
@@ -425,6 +439,7 @@ async def test_search_without_run_id_raises(e2e_reset):
 
     with pytest.raises(ValueError, match="run_id is required"):
         memory_search(run_id="", query="Dedup", top_k=5)
+
 
 @pytest.mark.asyncio
 async def test_search_gotcha_priority(e2e_reset):

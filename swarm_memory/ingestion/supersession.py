@@ -1,11 +1,10 @@
 import json
 import logging
-from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 from swarm_memory.core.llm_service import LLMService
-from swarm_memory.core.models import Fact, ConsolidationStatus, ConsolidationResult, SplitFactResult
+from swarm_memory.core.models import ConsolidationResult, ConsolidationStatus, Fact, SplitFactResult
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,9 @@ class ConsolidationEngine:
             ConsolidationResult containing status, superseded_ids, and merged_text
         """
         if not existing_facts:
-            return ConsolidationResult(status=ConsolidationStatus.INDEPENDENT, superseded_ids=[], merged_text=new_content)
+            return ConsolidationResult(
+                status=ConsolidationStatus.INDEPENDENT, superseded_ids=[], merged_text=new_content
+            )
 
         system_prompt = """You are a strict knowledge consolidation engine.
 You will be provided with a NEW FACT and a list of EXISTING FACTS (each with an ID).
@@ -56,44 +57,55 @@ You must output ONLY a valid JSON object in the following format:
 }
 
 CRITICAL RULES for JSON fields:
-- If status is "independent": 
+- If status is "independent":
     - `superseded_ids` MUST be an empty array [].
     - `merged_text` MUST be the exact text of the NEW FACT.
-- If status is "duplicate": 
+- If status is "duplicate":
     - `superseded_ids` MUST contain exactly one ID: the ID of the existing fact that it duplicates.
     - `merged_text` MUST be the exact text of the NEW FACT.
-- If status is "consolidated": 
+- If status is "consolidated":
     - `superseded_ids` MUST contain the IDs of ALL existing facts being replaced or merged.
     - `merged_text` MUST be the newly written comprehensive fact that flawlessly combines all valid information.
 """
 
         facts_json = [{"id": f.id, "content": f.content} for f in existing_facts]
-        user_prompt = f"NEW FACT: {new_content}\n\nEXISTING FACTS:\n{json.dumps(facts_json, indent=2)}"
+        user_prompt = (
+            f"NEW FACT: {new_content}\n\nEXISTING FACTS:\n{json.dumps(facts_json, indent=2)}"
+        )
 
         try:
             data = await self.llm_service.generate_json_async(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
             )
-            
+
             if not data:
-                return ConsolidationResult(status=ConsolidationStatus.INDEPENDENT, superseded_ids=[], merged_text=new_content)
+                return ConsolidationResult(
+                    status=ConsolidationStatus.INDEPENDENT,
+                    superseded_ids=[],
+                    merged_text=new_content,
+                )
 
             try:
                 result = ConsolidationResult.model_validate(data)
             except ValidationError as e:
                 logger.error(f"Pydantic Validation Error during consolidation: {e} | Data: {data}")
-                return ConsolidationResult(status=ConsolidationStatus.INDEPENDENT, superseded_ids=[],
-                                           merged_text=new_content)
-            
+                return ConsolidationResult(
+                    status=ConsolidationStatus.INDEPENDENT,
+                    superseded_ids=[],
+                    merged_text=new_content,
+                )
+
             # Ensure valid IDs
             valid_ids = {f.id for f in existing_facts}
             result.superseded_ids = [fid for fid in result.superseded_ids if fid in valid_ids]
-            
+
             return result
         except Exception as e:
             logger.error(f"Error during consolidation: {e}")
-            return ConsolidationResult(status=ConsolidationStatus.INDEPENDENT, superseded_ids=[], merged_text=new_content)
+            return ConsolidationResult(
+                status=ConsolidationStatus.INDEPENDENT, superseded_ids=[], merged_text=new_content
+            )
 
     async def split_fact(self, content: str) -> list[str]:
         """
@@ -112,7 +124,7 @@ Return JSON only in this format:
                 system_prompt=system_prompt,
                 user_prompt=content,
             )
-            
+
             facts = [content]
             if data:
                 try:
