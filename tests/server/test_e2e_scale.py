@@ -1,5 +1,7 @@
 import asyncio
 import os
+from dotenv import load_dotenv
+load_dotenv()
 from datetime import UTC, datetime
 
 import pytest
@@ -57,7 +59,6 @@ async def test_e2e_scale_ingestion():
 
     embedder = EmbeddingModel()
     engine = ConsolidationEngine()
-    engine.llm_service.model_name = "openrouter/openai/gpt-4o-mini"
 
     writer = FactWriter(db=db, embedder=embedder, engine=engine)
     from swarm_memory.retrieval.reader import FactReader

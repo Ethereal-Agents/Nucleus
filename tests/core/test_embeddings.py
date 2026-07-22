@@ -10,7 +10,11 @@ from swarm_memory.core.embeddings import PREFIX_DOCUMENT, PREFIX_QUERY, Embeddin
 def mock_embedder() -> EmbeddingModel:
     embedder = EmbeddingModel(model_name="mock-model", dim=768)
     mock_model = MagicMock()
-    mock_model.encode = lambda text, **_kwargs: np.ones(768, dtype=np.float32)
+    
+    def fake_embed(*args, **kwargs):
+        yield np.ones(768, dtype=np.float32)
+        
+    mock_model.embed = fake_embed
     embedder._model = mock_model
     return embedder
 
@@ -31,20 +35,24 @@ class TestEmbeddingModel:
     def test_embed_uses_document_prefix_by_default(self, mock_embedder):
         """embed() should prepend PREFIX_DOCUMENT by default."""
         calls = []
-        mock_embedder._model.encode = lambda text, **kw: (
-            calls.append(text),
-            np.ones(768, dtype=np.float32),
-        )[1]
+
+        def fake_embed(texts, **kw):
+            calls.append(texts[0])
+            yield np.ones(768, dtype=np.float32)
+
+        mock_embedder._model.embed = fake_embed
         mock_embedder.embed("some content")
         assert calls[0].startswith(PREFIX_DOCUMENT)
 
     def test_embed_query_uses_query_prefix(self, mock_embedder):
         """embed_query() must use PREFIX_QUERY, not PREFIX_DOCUMENT."""
         calls = []
-        mock_embedder._model.encode = lambda text, **kw: (
-            calls.append(text),
-            np.ones(768, dtype=np.float32),
-        )[1]
+
+        def fake_embed(texts, **kw):
+            calls.append(texts[0])
+            yield np.ones(768, dtype=np.float32)
+
+        mock_embedder._model.embed = fake_embed
         mock_embedder.embed_query("search this")
         assert calls[0].startswith(PREFIX_QUERY)
         assert not calls[0].startswith(PREFIX_DOCUMENT)
@@ -53,7 +61,11 @@ class TestEmbeddingModel:
         """Output should be truncated to configured dim even if model outputs more."""
         embedder = EmbeddingModel(dim=256)
         mock_model = MagicMock()
-        mock_model.encode = lambda text, **kw: np.ones(768, dtype=np.float32)
+        
+        def fake_embed(*args, **kw):
+            yield np.ones(768, dtype=np.float32)
+            
+        mock_model.embed = fake_embed
         embedder._model = mock_model
 
         result = embedder.embed("test")
@@ -62,9 +74,12 @@ class TestEmbeddingModel:
     def test_embed_batch_returns_correct_count(self, mock_embedder):
         """embed_batch() should return one bytes object per input text."""
         texts = ["fact one", "fact two", "fact three"]
-        mock_embedder._model.encode = lambda texts_list, **kw: np.ones(
-            (len(texts_list), 768), dtype=np.float32
-        )
+        
+        def fake_embed(texts_list, **kw):
+            for _ in texts_list:
+                yield np.ones(768, dtype=np.float32)
+                
+        mock_embedder._model.embed = fake_embed
         results = mock_embedder.embed_batch(texts)
         assert len(results) == 3
         assert all(isinstance(r, bytes) for r in results)
@@ -72,13 +87,13 @@ class TestEmbeddingModel:
     def test_embed_batch_empty_input(self):
         """embed_batch() with empty list should return empty list without calling model."""
         embedder = EmbeddingModel(dim=768)
-        mock_encode = MagicMock()
+        mock_embed = MagicMock()
         embedder._model = MagicMock()
-        embedder._model.encode = mock_encode
+        embedder._model.embed = mock_embed
 
         results = embedder.embed_batch([])
         assert results == []
-        mock_encode.assert_not_called()
+        mock_embed.assert_not_called()
 
     def test_dim_property(self, mock_embedder):
         """dim property should return the configured dimension."""

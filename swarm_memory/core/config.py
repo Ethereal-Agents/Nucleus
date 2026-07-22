@@ -30,14 +30,12 @@ DB_PATH = os.getenv("SWARM_MEMORY_DB_PATH", "swarm_memory.db")
 
 # ── Embedding model ─────────────────────────────────────────────────────────
 
-# HuggingFace model identifier for sentence-transformers.
+# Model identifier for fastembed (ONNX runtime).
 # nomic-embed-text-v1.5 is a 137M-param model with Matryoshka Representation
-# Learning (MRL), meaning you can truncate its 768-dim output to 256 dims
-# and still get ~95% of the quality at 3× less storage.
-#
-# TODO: Migrate to ONNX Runtime for 2-4× faster CPU inference once the
-#       pipeline is validated. nomic-embed-text-v1.5 has a pre-exported
-#       ONNX model on HuggingFace: nomic-ai/nomic-embed-text-v1.5-ONNX
+# Learning, meaning its 768-dim output can be safely truncated down to 256
+# while retaining 95% of performance.
+# 
+# Currently running via ONNX for minimal cold starts and low CPU latency.
 EMBED_MODEL = os.getenv(
     "SWARM_MEMORY_EMBED_MODEL",
     "nomic-ai/nomic-embed-text-v1.5",
