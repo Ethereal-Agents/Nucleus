@@ -46,7 +46,7 @@ class LLMService:
                         {"role": "user", "content": user_prompt},
                     ],
                     response_format={"type": "json_object"},
-                    max_tokens=200,
+                    max_tokens=4000,
                     temperature=0.0,
                 )
 
