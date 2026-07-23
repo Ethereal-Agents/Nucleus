@@ -48,6 +48,7 @@ Classify the NEW FACT into EXACTLY ONE of the following categories:
 3. CONSOLIDATED (Overlaps / Refines / Contradicts)
    - Definition: The NEW FACT shares subject matter with one or more EXISTING FACTS. It might add details, correct previous information, or overlap significantly.
    - Action: You must merge the NEW FACT and all affected EXISTING FACTS into a single, comprehensive fact. Resolve contradictions by trusting the NEW FACT (it is more recent), but ensure no non-contradictory details from the EXISTING FACTS are lost.
+   - Keyword Preservation: You MUST retain all specific terminology, technical jargon, proper nouns, error codes, and identifiers from the source texts. Do not generalize specific terms into broader categories.
 
 You must output ONLY a valid JSON object in the following format:
 {
@@ -111,12 +112,19 @@ CRITICAL RULES for JSON fields:
         """
         Splits a single large fact into multiple semantically independent facts.
         """
-        system_prompt = """You are an expert at breaking down large technical texts.
-Split the provided text into a list of smaller, self-contained facts.
-Each fact should be independent and semantically complete.
+        system_prompt = """You are an expert at breaking down large technical texts into manageable, self-contained knowledge blocks.
+Split the provided text into a list of self-contained facts, concepts, or procedures.
+
+IMPORTANT : DO NOT OVER-FRAGMENT
+
+CRITICAL INSTRUCTIONS FOR HYBRID SEARCH:
+1. Contextual Depth (For Semantic Search): Do not over-fragment. Group closely related details together into a single, cohesive block. The chunk must provide meaningful context on its own.
+2. Semantic Completeness: Resolve all pronouns and implicit references (e.g., replace "it" with the specific entity name). Each fact must stand completely alone.
+3. Keyword Preservation (For Keyword Search): NEVER abstract or summarize away specific terminology, technical jargon, error codes, IDs, or acronyms. Retain the exact vocabulary used in the source text.
+
 Return JSON only in this format:
 {
-  "facts": ["fact 1", "fact 2", "fact 3"]
+  "facts": ["comprehensive fact 1", "comprehensive fact 2", "comprehensive fact 3"]
 }
 """
         try:

@@ -60,7 +60,7 @@ BM25_WEIGHT = float(os.getenv("SWARM_MEMORY_BM25_WEIGHT", "0.8"))
 # Fact extraction settings
 DEFAULT_FACT_TYPE = "insight"
 MIN_CONFIDENCE_THRESHOLD = 0.5
-FACT_WORD_THRESHOLD = 150  # Split facts longer than this many words into smaller independent chunks
+FACT_WORD_THRESHOLD = 500  # Split facts longer than this many words into smaller independent chunks
 
 # Confidence decay per day (0.01 = 1% per day).
 # Applied to fact relevance scores to give recency bias:

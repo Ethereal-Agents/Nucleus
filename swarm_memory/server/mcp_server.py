@@ -37,11 +37,11 @@ session_manager = SessionManager()
 mcp = FastMCP("SwarmMemory")
 
 
-def _get_arm_for_run(run_id: str) -> str:
-    row = db.execute("SELECT arm FROM runs WHERE id = ?", [run_id]).fetchone()
+def _get_run_info(run_id: str) -> dict:
+    row = db.execute("SELECT arm, repo FROM runs WHERE id = ?", [run_id]).fetchone()
     if not row:
         raise ValueError(f"Run ID '{run_id}' not found. Please call memory_begin_run first.")
-    return row["arm"]
+    return dict(row)
 
 
 @mcp.tool()
@@ -76,8 +76,8 @@ async def memory_write(
         raise ValueError("Fact content cannot be empty")
 
     current_run_id.set(run_id)
-    arm_id = _get_arm_for_run(run_id)
-    current_arm_id.set(arm_id)
+    run_info = _get_run_info(run_id)
+    current_arm_id.set(run_info["arm"])
 
     result = await writer.write_fact(
         content=content,
@@ -120,8 +120,12 @@ def memory_search(
             "run_id is required to perform in-session deduplication. Please pass the run_id from memory_begin_run."
         )
     current_run_id.set(run_id)
-    arm_id = _get_arm_for_run(run_id)
+    run_info = _get_run_info(run_id)
+    arm_id = run_info["arm"]
     current_arm_id.set(arm_id)
+
+    if not scope:
+        scope = run_info["repo"]
 
     seen_ids = session_manager.get_seen_ids(run_id)
     fetch_k = top_k + len(seen_ids)
@@ -170,8 +174,8 @@ def memory_invalidate(
     - valid_to: (Optional) ISO-8601 timestamp for when the fact became invalid. Defaults to now.
     """
     current_run_id.set(run_id)
-    arm_id = _get_arm_for_run(run_id)
-    current_arm_id.set(arm_id)
+    run_info = _get_run_info(run_id)
+    current_arm_id.set(run_info["arm"])
     if not valid_to:
         valid_to = datetime.datetime.now(datetime.UTC).isoformat()
 
@@ -200,8 +204,8 @@ def memory_list_runs(
     - limit: Maximum number of runs to return (default 10).
     """
     current_run_id.set(run_id)
-    arm_id = _get_arm_for_run(run_id)
-    current_arm_id.set(arm_id)
+    run_info = _get_run_info(run_id)
+    current_arm_id.set(run_info["arm"])
     if repo:
         rows = db.execute(
             "SELECT * FROM runs WHERE repo = ? ORDER BY started_at DESC LIMIT ?", [repo, limit]
@@ -299,7 +303,8 @@ async def memory_end_run(
         total_cost_usd:  Total cost of this run in USD.
     """
     current_run_id.set(run_id)
-    arm_id = _get_arm_for_run(run_id)
+    run_info = _get_run_info(run_id)
+    arm_id = run_info["arm"]
     current_arm_id.set(arm_id)
 
     row = db.execute("SELECT finished_at FROM runs WHERE id = ?", [run_id]).fetchone()

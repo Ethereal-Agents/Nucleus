@@ -79,25 +79,27 @@ async def test_mcp_lifecycle():
         run_id=run_id,
         supersedes_hint=fact1_id,
     )
-    assert write_res2["status"] == "created"
+    assert write_res2["status"] == "consolidated"
     fact2_id = write_res2["fact_ids"][0]
     assert fact1_id in write_res2["superseded_ids"]
 
     # 5. Search for the new fact (using a new run_id to avoid dedup)
+    new_run = memory_begin_run(repo="testrepo", agent_id="agent1")
     search_res2 = memory_search(
-        query="auth", scope="testrepo/src/auth", run_id="new_run_123", top_k=5
+        query="auth", scope="testrepo/src/auth", run_id=new_run["run_id"], top_k=5
     )
     assert "The auth module now uses sessions" in search_res2
     assert "The auth module uses JWT" not in search_res2
 
     # 6. Manual Invalidation
-    inv_res = memory_invalidate(fact_id=fact2_id, reason="Rolled back to JWT")
+    inv_res = memory_invalidate(fact_id=fact2_id, reason="Rolled back to JWT", run_id=run_id)
     assert inv_res["status"] == "invalidated"
     assert inv_res["fact_id"] == fact2_id
 
     # 7. Search again (should find no active facts since both are superseded/invalidated)
+    new_run3 = memory_begin_run(repo="testrepo", agent_id="agent1")
     search_res3 = memory_search(
-        query="auth", scope="testrepo/src/auth", run_id="new_run_456", top_k=5
+        query="auth", scope="testrepo/src/auth", run_id=new_run3["run_id"], top_k=5
     )
     assert "no relevant facts found" in search_res3
 
@@ -111,10 +113,11 @@ async def test_mcp_lifecycle():
     assert end_res["status"] == "completed"
 
     # 9. List runs
-    runs = memory_list_runs(repo="testrepo")
+    runs = memory_list_runs(run_id=run_id, repo="testrepo")
     assert len(runs) >= 1
-    assert runs[0]["id"] == run_id
-    assert runs[0]["summary"] == valid_summary
+    assert any(r["id"] == run_id for r in runs)
+    run_entry = next(r for r in runs if r["id"] == run_id)
+    assert run_entry["summary"] == valid_summary
 
 
 @pytest.mark.asyncio
@@ -145,13 +148,15 @@ async def test_memory_end_run_fact_extraction():
     assert end_res["status"] == "completed"
 
     # 3. Search to verify both facts were written successfully
+    new_run1 = memory_begin_run(repo="testrepo", agent_id="agent1")
     search_res1 = memory_search(
-        query="PostgreSQL", scope="testrepo/infra/db", run_id="some_new_run", top_k=5
+        query="PostgreSQL", scope="testrepo/infra/db", run_id=new_run1["run_id"], top_k=5
     )
     assert "We migrated from PostgreSQL to MySQL." in search_res1
 
+    new_run2 = memory_begin_run(repo="testrepo", agent_id="agent1")
     search_res2 = memory_search(
-        query="user_id", scope="testrepo/src/users", run_id="some_new_run2", top_k=5
+        query="user_id", scope="testrepo/src/users", run_id=new_run2["run_id"], top_k=5
     )
     assert "Do not use the old user_id field" in search_res2
     assert "⚠" in search_res2  # Because it's a gotcha
@@ -169,7 +174,7 @@ async def test_memory_end_run_malformed_json_graceful():
     end_res = await memory_end_run(run_id=run_id, summary=malformed_summary)
     assert end_res["status"] == "error"
 
-    runs = memory_list_runs(repo="testrepo", limit=1)
+    runs = memory_list_runs(run_id=run_id, repo="testrepo", limit=1)
     assert runs[0]["id"] == run_id
     assert runs[0]["summary"] is None
 
@@ -231,7 +236,7 @@ async def test_write_returns_write_result():
     run_res = memory_begin_run(repo="testrepo", agent_id="agent1")
     run_id = run_res["run_id"]
     res = await memory_write(content="Fact 1", scope="repo/path", run_id=run_id)
-    assert "fact_id" in res
+    assert "fact_ids" in res
     assert "superseded_ids" in res
     assert res["status"] == "created"
 
@@ -255,7 +260,7 @@ async def test_write_with_supersedes_hint():
     res2 = await memory_write(
         content="Fact New", scope="repo/path", run_id=run_id, supersedes_hint=res1["fact_ids"][0]
     )
-    assert res2["status"] == "created"
+    assert res2["status"] == "consolidated"
     assert res1["fact_ids"][0] in res2["superseded_ids"]
 
 
@@ -264,14 +269,16 @@ async def test_write_with_supersedes_hint():
 # ==========================================
 @pytest.mark.asyncio
 async def test_search_returns_formatted_string():
-    res = memory_search(query="test", top_k=5)
+    run_res = memory_begin_run(repo="testrepo", agent_id="agent1")
+    res = memory_search(query="test", run_id=run_res["run_id"], top_k=5)
     assert isinstance(res, str)
     assert res.startswith("[MEMORY HUB —")
 
 
 @pytest.mark.asyncio
 async def test_search_no_results():
-    res = memory_search(query="nothing matches this", top_k=5)
+    run_res = memory_begin_run(repo="testrepo", agent_id="agent1")
+    res = memory_search(query="nothing matches this", run_id=run_res["run_id"], top_k=5)
     assert "no relevant facts found" in res
 
 
@@ -281,24 +288,14 @@ async def test_search_session_dedup():
     run_id = run_res["run_id"]
     await memory_write(content="Dedup fact", scope="repo/path", run_id=run_id)
     # Search first time
-    res1 = memory_search(query="Dedup fact", run_id=run_id, top_k=5)
+    res1 = memory_search(query="Dedup fact", scope="repo/path", run_id=run_id, top_k=5)
     assert "Dedup fact" in res1
     # Search second time, should be empty because of dedup
-    res2 = memory_search(query="Dedup fact", run_id=run_id, top_k=5)
+    res2 = memory_search(query="Dedup fact", scope="repo/path", run_id=run_id, top_k=5)
     assert "Dedup fact" not in res2
 
 
-@pytest.mark.asyncio
-async def test_search_no_run_id_no_dedup():
-    run_res = memory_begin_run(repo="testrepo", agent_id="agent1")
-    run_id = run_res["run_id"]
-    await memory_write(content="No dedup fact", scope="repo/path", run_id=run_id)
-    # Search without run_id
-    res1 = memory_search(query="No dedup fact", top_k=5)
-    assert "No dedup fact" in res1
-    # Search again without run_id, still there
-    res2 = memory_search(query="No dedup fact", top_k=5)
-    assert "No dedup fact" in res2
+# test_search_no_run_id_no_dedup removed because run_id is now strictly required.
 
 
 @pytest.mark.asyncio
@@ -313,7 +310,8 @@ async def test_search_arm2_uses_trajectories(monkeypatch):
         return []
 
     monkeypatch.setattr(mcp_module.reader, "search_trajectories", fake_search_trajectories)
-    memory_search(query="test", arm="arm2", top_k=5)
+    run_res = memory_begin_run(repo="testrepo", agent_id="agent1", arm="arm2")
+    memory_search(query="test", run_id=run_res["run_id"], top_k=5)
     assert called
 
 
@@ -325,7 +323,7 @@ async def test_search_top_k_respected():
     await memory_write(content="K fact 2", scope="repo/path", run_id=run_id)
     await memory_write(content="K fact 3", scope="repo/path", run_id=run_id)
 
-    res = memory_search(query="K fact", top_k=2)
+    res = memory_search(query="K fact", run_id=run_id, top_k=2)
     assert res.count("K fact") <= 2
 
 
@@ -338,7 +336,7 @@ async def test_search_fact_type_filter():
         content="This is an insight", scope="repo", run_id=run_id, fact_type="insight"
     )
 
-    res = memory_search(query="This is a", fact_type="gotcha")
+    res = memory_search(query="This is a", scope="repo", run_id=run_id, fact_type="gotcha")
     assert "gotcha" in res
     assert "insight" not in res
 
@@ -353,13 +351,16 @@ async def test_invalidate_existing_fact():
     w_res = await memory_write(content="To be invalidated", scope="repo", run_id=run_id)
     fact_id = w_res["fact_ids"][0]
 
-    inv_res = memory_invalidate(fact_id=fact_id, reason="Testing")
+    inv_res = memory_invalidate(fact_id=fact_id, reason="Testing", run_id=run_id)
     assert inv_res["status"] == "invalidated"
     assert inv_res["fact_id"] == fact_id
 
 
 def test_invalidate_nonexistent_fact():
-    inv_res = memory_invalidate(fact_id="nonexistent-id", reason="Testing")
+    run_res = memory_begin_run(repo="testrepo", agent_id="agent1")
+    inv_res = memory_invalidate(
+        fact_id="nonexistent-id", reason="Testing", run_id=run_res["run_id"]
+    )
     assert inv_res["status"] == "error"
 
 
@@ -370,7 +371,7 @@ async def test_invalidate_sets_valid_to():
     w_res = await memory_write(content="To be invalidated valid_to", scope="repo", run_id=run_id)
     fact_id = w_res["fact_ids"][0]
 
-    memory_invalidate(fact_id=fact_id, reason="Testing")
+    memory_invalidate(fact_id=fact_id, reason="Testing", run_id=run_id)
     from swarm_memory.server.mcp_server import db
 
     row = db.execute("SELECT valid_to FROM facts WHERE id = ?", [fact_id]).fetchone()
@@ -387,7 +388,7 @@ async def test_invalidate_custom_valid_to():
     fact_id = w_res["fact_ids"][0]
     custom_time = "2024-01-01T00:00:00Z"
 
-    memory_invalidate(fact_id=fact_id, reason="Testing", valid_to=custom_time)
+    memory_invalidate(fact_id=fact_id, reason="Testing", run_id=run_id, valid_to=custom_time)
     from swarm_memory.server.mcp_server import db
 
     row = db.execute("SELECT valid_to FROM facts WHERE id = ?", [fact_id]).fetchone()
@@ -401,10 +402,10 @@ async def test_invalidate_already_invalidated():
     w_res = await memory_write(content="Double invalidate", scope="repo", run_id=run_id)
     fact_id = w_res["fact_ids"][0]
 
-    res1 = memory_invalidate(fact_id=fact_id, reason="First")
+    res1 = memory_invalidate(fact_id=fact_id, reason="First", run_id=run_id)
     assert res1["status"] == "invalidated"
 
-    res2 = memory_invalidate(fact_id=fact_id, reason="Second")
+    res2 = memory_invalidate(fact_id=fact_id, reason="Second", run_id=run_id)
     assert res2["status"] == "error"
 
 
@@ -412,13 +413,14 @@ async def test_invalidate_already_invalidated():
 # New Tests - memory_list_runs (MCP-40 to MCP-44)
 # ==========================================
 def test_list_runs_empty_db():
-    runs = memory_list_runs(repo="empty_repo")
+    run_res = memory_begin_run(repo="another_repo", agent_id="agent1")
+    runs = memory_list_runs(run_id=run_res["run_id"], repo="empty_repo")
     assert len(runs) == 0
 
 
 def test_list_runs_returns_correct_fields():
-    memory_begin_run(repo="repo1", agent_id="agent1", branch="main")
-    runs = memory_list_runs(repo="repo1")
+    run_res = memory_begin_run(repo="repo1", agent_id="agent1", branch="main")
+    runs = memory_list_runs(run_id=run_res["run_id"], repo="repo1")
     assert len(runs) >= 1
     run = runs[0]
     assert "id" in run
@@ -430,8 +432,8 @@ def test_list_runs_returns_correct_fields():
 
 def test_list_runs_repo_filter():
     memory_begin_run(repo="repoA", agent_id="agentA")
-    memory_begin_run(repo="repoB", agent_id="agentB")
-    runs = memory_list_runs(repo="repoA")
+    run_res = memory_begin_run(repo="repoB", agent_id="agentB")
+    runs = memory_list_runs(run_id=run_res["run_id"], repo="repoA")
     assert len(runs) == 1
     assert runs[0]["repo"] == "repoA"
 
@@ -439,8 +441,8 @@ def test_list_runs_repo_filter():
 def test_list_runs_limit():
     memory_begin_run(repo="repoL", agent_id="agent1")
     memory_begin_run(repo="repoL", agent_id="agent2")
-    memory_begin_run(repo="repoL", agent_id="agent3")
-    runs = memory_list_runs(repo="repoL", limit=2)
+    run_res = memory_begin_run(repo="repoL", agent_id="agent3")
+    runs = memory_list_runs(run_id=run_res["run_id"], repo="repoL", limit=2)
     assert len(runs) == 2
 
 
@@ -450,7 +452,7 @@ def test_list_runs_ordered_by_recency():
 
     time.sleep(0.01)
     res2 = memory_begin_run(repo="repoO", agent_id="agent2")
-    runs = memory_list_runs(repo="repoO")
+    runs = memory_list_runs(run_id=res2["run_id"], repo="repoO")
     assert runs[0]["id"] == res2["run_id"]
     assert runs[1]["id"] == res1["run_id"]
 
@@ -579,7 +581,7 @@ async def test_end_run_arm2_trajectory(monkeypatch):
 
     monkeypatch.setattr(mcp_module.writer, "write_trajectory", fake_write_trajectory)
 
-    await memory_end_run(run_id=run_id, arm="arm2", summary="[]", trajectory='[{"step": 1}]')
+    await memory_end_run(run_id=run_id, summary="[]", trajectory='[{"step": 1}]')
     assert called
 
 
@@ -587,7 +589,7 @@ async def test_end_run_arm2_trajectory(monkeypatch):
 async def test_end_run_arm2_no_trajectory():
     res = memory_begin_run(repo="repo_end_arm2_no_traj", agent_id="agent1", arm="arm2")
     run_id = res["run_id"]
-    end_res = await memory_end_run(run_id=run_id, arm="arm2", summary="[]")
+    end_res = await memory_end_run(run_id=run_id, summary="[]")
     assert end_res["status"] == "completed"
 
 
