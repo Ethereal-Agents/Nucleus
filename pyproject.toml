@@ -15,6 +15,7 @@ dependencies = [
     "uuid7>=0.1.0",
     "litellm>=1.91.0",
     "python-dotenv>=1.2.2",
+    "swebench>=4.1.0",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,879 @@
+[
+  {
+    "pr_number": 16569,
+    "title": "Fixed #34349 -- Fixed FormSet.empty_form crash when deleting extra forms is disabled.",
+    "merged_at": "2023-02-20T08:32:11Z",
+    "merge_commit_sha": "6cbc403b8ee7014bd6dae4892d404eedb1d4a50d",
+    "linked_ticket": 34349,
+    "trac_summary": "Formsets' add_fields() method fails in some circumstances if the argument index is None.",
+    "problem_statement": "Ticket #34349: Formsets' add_fields() method fails in some circumstances if the argument index is None.\n\nFormsets' `add_fields()` method fails in some circumstances if the argument `index` is `None`.\r\n\r\nWhen a FormSet has the attributes `self.can_delete == True` and `self.can_delete_extra == False`, calling the `add_fields()` method on that FormSet fails if the argument `index` is `None`. This occurs for example when calling `FormSet.empty_form()`. The result is that the method raises the exception `TypeError: '<' not supported between instances of 'NoneType' and 'int'`. \r\n\r\nCode example:\r\n{{{#!python\r\nMyFormSet = forms.formset_factory(\r\n    form=MyForm,\r\n    can_delete=True,\r\n    can_delete_extra=False,\r\n)\r\nmy_formset = MyFormSet(\r\n    initial=None,\r\n)\r\nprint(my_formset.empty_form)\r\n}}}\r\n\r\nThe reason this happens is that in in line 493 of [django.forms.formsets](https://github.com/django/django/blob/main/django/forms/formsets.py) `index` is compared to `initial_form_count`:\r\n{{{#!python\r\nif self.can_delete and (self.can_delete_extra or index < initial_form_count):\r\n}}}\r\n\r\nChecking for index `not None` should fix the issue:\r\n{{{#!python\r\nif self.can_delete and (self.can_delete_extra or (index is not None and index < initial_form_count)):\r\n}}}\r\n\r\n== How to Reproduce\r\n\r\nA self-contained example to reproduce this bug is as follows:\r\n\r\n{{{#!python\r\n#!/usr/bin/env python3\r\n\r\nimport os\r\n\r\nimport django\r\nfrom django import forms\r\n\r\n\r\nclass MyForm(forms.Form):\r\n    my_field = forms.CharField()\r\n\r\n\r\nif __name__ == \"__main__\":\r\n    settings_file = os.path.splitext(os.path.basename(__file__))[0]\r\n    django.conf.settings.configure(\r\n        DEBUG=True,\r\n        MIDDLEWARE_CLASSES=[],\r\n        ROOT_URLCONF=settings_file,\r\n    )\r\n    django.setup()\r\n\r\n    MyFormSet = forms.formset_factory(\r\n        form=MyForm,\r\n        can_delete=True,\r\n        can_delete_extra=False,\r\n    )\r\n    my_formset = MyFormSet(\r\n        initial=None,\r\n    )\r\n\r\n    print(my_formset.empty_form)\r\n}}}",
+    "all_files": [
+      "django/forms/formsets.py",
+      "tests/forms_tests/tests/test_formsets.py"
+    ],
+    "subsystem_files": [
+      "django/forms/formsets.py"
+    ]
+  },
+  {
+    "pr_number": 16629,
+    "title": "Fixed #34388 -- Allowed using choice enumeration types directly on model and form fields.",
+    "merged_at": "2023-03-21T19:33:54Z",
+    "merge_commit_sha": "a2eaea8f22305b57dff3ab13add2e2887287bb6f",
+    "linked_ticket": 34388,
+    "trac_summary": "Added support for direct usage of Choices classes on model fields",
+    "problem_statement": "Ticket #34388: Added support for direct usage of Choices classes on model fields\n\nHi,\r\n\r\nI would like to propose a feature addition on how `Choices` are handled when used on model fields. Currently, `Field.choices` only accepts iterables. This has 2 shortcommings imho:\r\n\r\n1. - Rejecting a `Choices` class as argument to `Field(choices=...)` seems counter-intuitive. Providing the class directly currently results in a `fields.E005` error. \r\n    - To make this more pythonic, the field should also accept the Choice class directly and deal with the variation internally. \r\n    - I really can't come up with a scenario where a user would want a different behavior or rather that a user would be surprised by the implicit resolution.\r\n\r\n~~2. By forcing the user to expand the `Choices` class manually, essentially all meta information is lost. Downstream packages may benefit from this lost information.~~\r\n   - ~~Specifically, as maintainer of [https://github.com/tfranzel/drf-spectacular drf-spectcular] (OpenAPI generator for DRF), I am interested in the name of the choice set (e.g. Suit, Vehicle, Gender) and potentially also the docstring. This would greatly improve OpenAPI generation of choice sets and take out the unnecessary guesswork to find a proper name. (And if anyone wonders, the model field name is not a good candidate for a choice set name.)~~\r\n \r\nThis PR allows to use `Choices` classes directly as argument, while being transparent. No behavioral changes otherwise.\r\n\r\nI marked this as `dev`, but it would be awesome if it could still slip into `4.2`. Not sure if the feature window is still open, but this is more or less a trivial and backwards-compatible change with little risk. PR is still missing some docs, which I will write if this is considered. \r\n\r\n\r\n{{{ #!python\r\nclass Suit(models.IntegerChoices):\r\n    \"\"\" All possible card categories in a deck \"\"\"\r\n    DIAMOND = 1, _(\"Diamond\")\r\n    SPADE = 2, _(\"Spade\")\r\n    HEART = 3, _(\"Heart\")\r\n    CLUB = 4, _(\"Club\")\r\n    \r\nclass Choiceful(models.Model):\r\n    # CURRENTLY:\r\n    from_enum_old = models.IntegerField(choices=Suit.choices)\r\n    \r\n    # NEW: raised an fields.E005 prior to proposed PR. Now, retains reference \r\n    # to class and transparently resolves via implicit `.choices` call\r\n    from_new = models.IntegerField(choices=Suit)\r\n}}}",
+    "all_files": [
+      "django/db/models/fields/__init__.py",
+      "django/forms/fields.py",
+      "docs/ref/forms/fields.txt",
+      "docs/ref/models/fields.txt",
+      "docs/releases/5.0.txt",
+      "docs/topics/db/models.txt",
+      "tests/forms_tests/field_tests/test_choicefield.py",
+      "tests/migrations/test_writer.py",
+      "tests/model_fields/models.py",
+      "tests/model_fields/test_charfield.py",
+      "tests/model_fields/test_integerfield.py",
+      "tests/model_fields/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/fields.py"
+    ]
+  },
+  {
+    "pr_number": 16666,
+    "title": "Fixed #34077 -- Added form field rendering.",
+    "merged_at": "2023-03-24T11:43:20Z",
+    "merge_commit_sha": "cad376f844c7bdeeee7607a7c0ea8ae52061309b",
+    "linked_ticket": 34077,
+    "trac_summary": "Make BoundField renderable.",
+    "problem_statement": "Ticket #34077: Make BoundField renderable.\n\nAs of Django 4.1 Forms and Widgets (i.e. its `<input>`) are renderable using the template engine. Django also has a strong concept of a field with the `BoundField` class. This contains all of the information required to render a field such as its label, errors, help text and its Widget. \r\n\r\nCurrently something like this is possible:\r\n\r\n{{{\r\n{% for field in form %}\r\n  {{ field.label_tag }}\r\n  {{ field }} # Note this is the widget!\r\n  {{ field.help_text }}\r\n{% endfor %}\r\n}}}\r\n\r\nThe current limitation is that each component of each field needs to be rendered individually. It's fine when they are rendered all in the same way as we can put them in a nice loop like above.\r\n\r\nHowever, a reasonable request could be to have the `first name` and `last name` on the same row (say). This would result in needing to do something like the following. This would become even more verbose with errors being introduced too:\r\n\r\n{{{\r\n<div class=\"row\">\r\n   <div class=\"col\"> \r\n     {{ form.first_name.label }}\r\n     {{ form.first_name }}\r\n     {{ form.first_name.help_text }}\r\n  </div>\r\n  <div class=\"col\">\r\n     {{ form.last_name.label }}\r\n     {{ form.last_name }}\r\n     {{ form.last_name.help_text }}\r\n   </div>\r\n</div>\r\n<div>\r\n   # more fields here\r\n</div>\r\n}}}\r\n\r\nThe proposal is that the `BoundField` should be a renderable object, this could either be done by a new method (e.g. `field.as_field`) or maybe a template filter (e.g `field|as_field`). We need the `as_field` (or another function name) as the field on it's own currently renders the fields widget rather than the whole field (i.e. incl label, help text , errors). \r\n\r\nThis would allow the above to be written as:\r\n\r\n{{{\r\n<div class=\"row\">\r\n   <div class=\"col\"> \r\n     {{ form.first_name|as_field }}\r\n  </div>\r\n  <div class=\"col\">\r\n     {{ form.last_name|as_field }}\r\n   </div>\r\n</div>\r\n<div>\r\n   # more fields here\r\n</div>\r\n}}}\r\n\r\nA few initial thoughts on a possible implementation approach. This is not fully thought out, but should hopefully be a helpful rough guide. \r\n\r\n1. [https://github.com/django/django/blob/main/django/forms/fields.py#L82 Field] would learn a `template_name` attribute which can also be set via it's `__init__`. Therefore in a form you would have:\r\n\r\n{{{\r\nclass MyForm(forms.Form)\r\n    first_name = forms.CharField(max=10, template_name=\"my_template_name.html\")\r\n}}}\r\n\r\n2. Add a new method, either as a filter or as a new method to [https://github.com/django/django/blob/d795259ea96004df0a2469246229a146307bcd2c/django/forms/boundfield.py#L14 BoundField] which renders the `BoundField` with it's fields template (`boundfield.field.template_name`)\r\n\r\n3. Consider if we need to provide a default implementation of this. If so we should replicate the `div.html` templates. Specifically [https://github.com/django/django/blob/d795259ea96004df0a2469246229a146307bcd2c/django/forms/templates/django/forms/div.html#L5-L21 these lines]. The `div.html` template can be updated to use this new method. \r\n\r\n4. If we do step 3 then the errors will likely be an issue as they currently get rendered to a str in the form's [https://github.com/django/django/blob/d795259ea96004df0a2469246229a146307bcd2c/django/forms/forms.py#L328-L348 get_context]. This may need breaking out into a separate function so it can be called when rendering a field. `BoundField` know's about it's associated form (`BoundField.Form`)",
+    "all_files": [
+      "django/forms/boundfield.py",
+      "django/forms/fields.py",
+      "django/forms/jinja2/django/forms/div.html",
+      "django/forms/jinja2/django/forms/field.html",
+      "django/forms/renderers.py",
+      "django/forms/templates/django/forms/div.html",
+      "django/forms/templates/django/forms/field.html",
+      "django/forms/utils.py",
+      "docs/ref/forms/api.txt",
+      "docs/ref/forms/fields.txt",
+      "docs/ref/forms/renderers.txt",
+      "docs/releases/5.0.txt",
+      "docs/topics/forms/index.txt",
+      "tests/forms_tests/templates/forms_tests/custom_field.html",
+      "tests/forms_tests/tests/test_forms.py",
+      "tests/forms_tests/tests/test_utils.py"
+    ],
+    "subsystem_files": [
+      "django/forms/boundfield.py",
+      "django/forms/fields.py",
+      "django/forms/jinja2/django/forms/div.html",
+      "django/forms/jinja2/django/forms/field.html",
+      "django/forms/renderers.py",
+      "django/forms/templates/django/forms/div.html",
+      "django/forms/templates/django/forms/field.html",
+      "django/forms/utils.py"
+    ]
+  },
+  {
+    "pr_number": 16785,
+    "title": "Fixed #34488 -- Made ClearableFileInput preserve \"Clear\" checked attribute when form is invalid.",
+    "merged_at": "2023-04-21T06:38:43Z",
+    "merge_commit_sha": "8a6c0203c4e92908c2b26ba54feba4ce7e76d081",
+    "linked_ticket": 34488,
+    "trac_summary": "ClearableFileInput widget forgets \"Clear\" selection when form is not valid",
+    "problem_statement": "Ticket #34488: ClearableFileInput widget forgets \"Clear\" selection when form is not valid\n\nClearableFileInput widget forgets \"Clear\" selection when form is not valid, that causes file would not be deleted once when form is valid again. This can be inconvinient, especially for forms with many fields.\r\n\r\nTo reproduce:\r\n\r\n1. Choose admin for any model instance where attachment is not required and has some validation,\r\n2. check \"Clear\" next to the attachment, and change the form, so validation would fail,\r\n3. Save form, validation error would occur, attachment and \"Clear\" would be empty\r\n4. make form valid again and Save, attachment woult not be cleared\r\n\r\n(I am attaching  example screenshots)\r\n\r\n[[https://code.djangoproject.com/attachment/ticket/34488/clearable-file-input-before.png]]\r\n\r\n[[https://code.djangoproject.com/attachment/ticket/34488/clearable-file-input-validation-error.png]]\r\n\r\n[[https://code.djangoproject.com/attachment/ticket/34488/clearable-file-input-validation-success.png]]",
+    "all_files": [
+      "django/contrib/admin/templates/admin/widgets/clearable_file_input.html",
+      "django/forms/widgets.py",
+      "tests/admin_widgets/tests.py",
+      "tests/forms_tests/widget_tests/test_clearablefileinput.py"
+    ],
+    "subsystem_files": [
+      "django/forms/widgets.py"
+    ]
+  },
+  {
+    "pr_number": 16614,
+    "title": "Fixed #34380 -- Allowed specifying a default URL scheme in forms.URLField.",
+    "merged_at": "2023-04-28T05:35:01Z",
+    "merge_commit_sha": "7bbbadc69383f0a2b99253e153b974f8783e876d",
+    "linked_ticket": 34380,
+    "trac_summary": "Make URLField assume \"https\".",
+    "problem_statement": "Ticket #34380: Make URLField assume \"https\".\n\nIn `django.forms.fields.URLField.to_python` the assumption is made that the `http` (no S) is a good default scheme for URLs that do not specify a scheme when submitted.\r\n\r\nEntering `example.com` in a URLField will give `http://example.com` as cleaned data.\r\n\r\nRef: https://github.com/django/django/blame/main/django/forms/fields.py#L772-L774\r\n\r\nI think URLField should assume the safe option `https`.\r\n\r\nI've notified the security team, and they didn't see this as a security issue.",
+    "all_files": [
+      "django/forms/fields.py",
+      "docs/internals/deprecation.txt",
+      "docs/ref/forms/fields.txt",
+      "docs/releases/5.0.txt",
+      "tests/admin_views/tests.py",
+      "tests/admin_widgets/tests.py",
+      "tests/forms_tests/field_tests/test_urlfield.py",
+      "tests/forms_tests/tests/test_error_messages.py",
+      "tests/generic_inline_admin/tests.py",
+      "tests/model_forms/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/fields.py"
+    ]
+  },
+  {
+    "pr_number": 16745,
+    "title": "Fixed #34473 -- Fixed step validation for form fields with non-zero minimum value.",
+    "merged_at": "2023-06-16T10:20:12Z",
+    "merge_commit_sha": "1fe0b167af3611cca79e8a8092ee929312193c6f",
+    "linked_ticket": 34473,
+    "trac_summary": "StepValueValidator does not take into account min_value",
+    "problem_statement": "Ticket #34473: StepValueValidator does not take into account min_value\n\nIf you define a number input with `<input type=\"number\" min=1 step=2>`, client side this will only allow positive odd numbers. \r\n\r\nWe could generate the same input in a Django form with `IntegerField(min_value=1, step_size=2)` and `Field.localize` is `False`, which would then use `MinValueValidator` and `StepValueValidator`.\r\n\r\nWe then get into a problem as `StepValueValidator` always uses `0` as the base, so `step_size=2` only even numbers are allowed. This then conflicts with the client side validation, and the user cannot submit any value for the input.\r\n\r\nI'm unsure if this is a bug or whether this is just a configuration problem, apologies if so, but the behaviour does seem to me to conflict with how min and step is handled by browsers.",
+    "all_files": [
+      "django/core/validators.py",
+      "django/forms/fields.py",
+      "docs/ref/forms/fields.txt",
+      "docs/ref/validators.txt",
+      "docs/releases/5.0.txt",
+      "tests/forms_tests/field_tests/test_decimalfield.py",
+      "tests/forms_tests/field_tests/test_floatfield.py",
+      "tests/forms_tests/field_tests/test_integerfield.py",
+      "tests/validators/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/fields.py"
+    ]
+  },
+  {
+    "pr_number": 16920,
+    "title": "Fixed #32819 -- Established relationship between form fields and their help text.",
+    "merged_at": "2023-07-06T06:56:01Z",
+    "merge_commit_sha": "966ecdd482167f3f6b08b00f484936c837751cb9",
+    "linked_ticket": 32819,
+    "trac_summary": "Fields\u2019 help text and errors should be associated with input",
+    "problem_statement": "Ticket #32819: Fields\u2019 help text and errors should be associated with input\n\nWith Django\u2019s default field rendering, all field errors are rendered as a list above the field\u2019s label, and help text is rendered after the field\u2019s form element. Example with `as_p`:\r\n\r\n{{{\r\n<ul class=\"errorlist\">\r\n  <li>This field is required.</li>\r\n</ul>\r\n<p>\r\n  <label for=\"id_duration_required\">Duration required:</label>\r\n  <input type=\"text\" name=\"duration_required\" required=\"\" id=\"id_duration_required\">\r\n  <span class=\"helptext\">Help</span>\r\n</p>\r\n}}}\r\n\r\nOne problem for screen reader users is that the association between the errors and the field, and between the help text and the field, is only communicated visually. This is a failure of either WCAG 2.1 level A [https://www.w3.org/WAI/WCAG21/Understanding/info-and-relationships.html SC 1.3.1: Info and Relationships], or [https://www.w3.org/WAI/WCAG21/Understanding/labels-or-instructions SC 3.3.2: Labels or Instructions]. More importantly, it just makes it harder than necessary for screen reader users to make use of help text, and to identify error messages.\r\n\r\nThe fix is relatively straightforward \u2013 using `aria-describedby`, as documented in the (non-normative) [https://www.w3.org/WAI/WCAG21/Techniques/aria/ARIA1.html ARIA1 Using the aria-describedby property to provide a descriptive label for user interface controls] technique. Here is another well-known accessibility-oriented UI library that implements this technique: [https://design-system.service.gov.uk/components/text-input/#error-messages GOV.UK design system \u2013 text input with error message].\r\n\r\nHere is what implementing `aria-describedby` would look like in the same example as above:\r\n\r\n{{{\r\n<div class=\"errorlist\" id=\"id_duration_required_errorlist\">\r\n  <p>This field is required.</p>\r\n</div>\r\n<p>\r\n  <label for=\"id_duration_required\">Duration required:</label>\r\n  <input type=\"text\" name=\"duration_required\" required=\"\" id=\"id_duration_required\" aria-describedby=\"id_duration_required_errorlist id_duration_required_helptext\">\r\n  <span class=\"helptext\" id=\"id_duration_required_helptext\">Help</span>\r\n</p>\r\n}}}\r\n\r\nWe have additional `id` attributes, `aria-describedby`, and `errorlist` is no longer a `<ul>`. Result in VoiceOver:\r\n\r\n[[Image(https://code.djangoproject.com/raw-attachment/ticket/32819/email-required-ariadescribedby.gif)]]\r\n\r\nUnfortunately I tried to have this with the `errorlist` kept as a `ul`, but it wasn\u2019t announced by VoiceOver. I haven\u2019t heard of this limitation before so am not sure why that might be the case \u2013\u00a0I\u2019d appreciate others taking a look if possible.",
+    "all_files": [
+      "django/forms/boundfield.py",
+      "django/forms/jinja2/django/forms/field.html",
+      "django/forms/jinja2/django/forms/p.html",
+      "django/forms/jinja2/django/forms/table.html",
+      "django/forms/jinja2/django/forms/ul.html",
+      "django/forms/templates/django/forms/field.html",
+      "django/forms/templates/django/forms/p.html",
+      "django/forms/templates/django/forms/table.html",
+      "django/forms/templates/django/forms/ul.html",
+      "docs/ref/forms/fields.txt",
+      "docs/releases/5.0.txt",
+      "docs/topics/forms/index.txt",
+      "tests/admin_inlines/tests.py",
+      "tests/forms_tests/tests/test_forms.py",
+      "tests/model_forms/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/boundfield.py",
+      "django/forms/jinja2/django/forms/field.html",
+      "django/forms/jinja2/django/forms/p.html",
+      "django/forms/jinja2/django/forms/table.html",
+      "django/forms/jinja2/django/forms/ul.html",
+      "django/forms/templates/django/forms/field.html",
+      "django/forms/templates/django/forms/p.html",
+      "django/forms/templates/django/forms/table.html",
+      "django/forms/templates/django/forms/ul.html"
+    ]
+  },
+  {
+    "pr_number": 16950,
+    "title": "Fixed #32210 -- Fixed model inlines with to_field that has a default.",
+    "merged_at": "2023-07-07T08:37:27Z",
+    "merge_commit_sha": "eed096574fea5c9d82d0dc5952ad439dfde13718",
+    "linked_ticket": 32210,
+    "trac_summary": "Django Admin with Inlines not using UUIDField default value",
+    "problem_statement": "Ticket #32210: Django Admin with Inlines not using UUIDField default value\n\nHello,\r\n\r\nI am a long time django user, first time bug reporter, so please let me know if I need to do anything else to help get this bug fixed :)\r\n\r\nI am using Django 3.1.3 and python 3.8.5 and have cerated a toy project to illustrate the bug. I have the following models:\r\n\r\n\r\n{{{\r\nclass UUIDModel(models.Model):\r\n    pkid = models.BigAutoField(primary_key=True, editable=False)\r\n    id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)\r\n\r\n    class Meta:\r\n        abstract = True\r\n\r\nclass Thing(UUIDModel):\r\n    name = models.CharField(max_length=191)\r\n\r\nclass SubThing(models.Model):\r\n    name = models.CharField(max_length=191)\r\n    thing = models.ForeignKey(\r\n        'bugapp.Thing',\r\n        to_field='id',\r\n        on_delete = models.CASCADE,\r\n        related_name='subthings',\r\n    )\r\n}}}\r\n\r\nAnd the following admin.py file:\r\n\r\n\r\n{{{\r\nclass SubThingInline(admin.StackedInline):\r\n    model = SubThing\r\n\r\n@admin.register(Thing)\r\nclass ThingAdmin(admin.ModelAdmin):\r\n    list_display = ('name',)\r\n    ordering = ('pkid',)\r\n    inlines = (SubThingInline,)\r\n}}}\r\n\r\nWhen logging into the admin, if you delete all of the entries for \"subthings\", add a name, and save the model, it will work. As soon as you try to add a subthing alongside the main Thing, it fails with the following exception:\r\n\r\nhttps://dpaste.com/8EU4FF6RW\r\n\r\nIt shows that the value of \"id\" in the Thing model is being set to null.\r\n\r\nI believe this is a bug in django.\r\n\r\nThanks!",
+    "all_files": [
+      "django/forms/models.py",
+      "tests/model_formsets/test_uuid.py"
+    ],
+    "subsystem_files": [
+      "django/forms/models.py"
+    ]
+  },
+  {
+    "pr_number": 17111,
+    "title": "Fixed #32820 -- Added aria-invalid=\"true\" to fields with errors.",
+    "merged_at": "2023-08-01T05:59:24Z",
+    "merge_commit_sha": "10725a31879c55ba8d92aaa3275093d136957bef",
+    "linked_ticket": 32820,
+    "trac_summary": "Fields\u2019 errors should be programmatically associated with fields.",
+    "problem_statement": "Ticket #32820: Fields\u2019 errors should be programmatically associated with fields.\n\nRelated: [https://code.djangoproject.com/ticket/32819 #32819]. This could be worth fixing at the same time, although I would expect this issue shouldn\u2019t require as breaking of a change to fix.\r\n\r\nDjango currently displays errors above fields in its forms rendering:\r\n\r\n\r\n{{{\r\n<ul class=\"errorlist\">\r\n  <li>This field is required.</li>\r\n</ul>\r\n<p>\r\n  <label for=\"id_duration_required\">Duration required:</label>\r\n  <input type=\"text\" name=\"duration_required\" required=\"\" id=\"id_duration_required\">\r\n  <span class=\"helptext\">Help</span>\r\n</p>\r\n}}}\r\n\r\nOne thing this is missing is a way to programmatically indicate the field is in error \u2013 currently this can only be inferred visually because the error messages are displayed above the field. This is fail of WCAG 2.1 level A [https://www.w3.org/WAI/WCAG21/Understanding/error-identification 3.3.1: Error Identification]. The most common way to do this programmatically is to use `aria-invalid=\"true\"` on the field, as demonstrated in the non-normative [https://www.w3.org/WAI/WCAG21/Techniques/aria/ARIA21 technique ARIA21]:\r\n\r\n{{{\r\n  <input type=\"text\" name=\"duration_required\" required=\"\" id=\"id_duration_required\" aria-invalid=\"true\">\r\n}}}\r\n\r\nHere is the result in VoiceOver on Safari \u2013\u00a0announcing \"invalid data\" after the field label and required state:\r\n\r\n[[Image(https://code.djangoproject.com/raw-attachment/ticket/32820/email-required-aria-invalid.png)]]",
+    "all_files": [
+      "django/forms/boundfield.py",
+      "docs/ref/forms/api.txt",
+      "docs/ref/forms/fields.txt",
+      "docs/releases/5.0.txt",
+      "tests/forms_tests/tests/test_forms.py",
+      "tests/forms_tests/tests/test_i18n.py",
+      "tests/gis_tests/geoadmin/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/boundfield.py"
+    ]
+  },
+  {
+    "pr_number": 16943,
+    "title": " Fixed #31262 -- Added support for mappings on model fields and ChoiceField's choices.",
+    "merged_at": "2023-08-31T01:57:41Z",
+    "merge_commit_sha": "500e01073adda32d5149624ee9a5cb7aa3d3583f",
+    "linked_ticket": 31262,
+    "trac_summary": "Support dictionaries in Field.choices for named groups.",
+    "problem_statement": "Ticket #31262: Support dictionaries in Field.choices for named groups.\n\nThe Django documentation gives this example for creating named groups of choices:\r\n\r\n{{{\r\nMEDIA_CHOICES = [\r\n    ('Audio', (\r\n            ('vinyl', 'Vinyl'),\r\n            ('cd', 'CD'),\r\n        )\r\n    ),\r\n    ('Video', (\r\n            ('vhs', 'VHS Tape'),\r\n            ('dvd', 'DVD'),\r\n        )\r\n    ),\r\n    ('unknown', 'Unknown'),\r\n]\r\n}}}\r\n\r\nWith Python 3.7 (and implicitly in CPython 3.6) dictionaries are ordered, meaning this syntax could be replaced by the cleaner and easier to parse:\r\n\r\n{{{\r\n{\r\n    \"Audio\": (\r\n         ('vinyl', 'Vinyl'),\r\n         ('cd', 'CD'),\r\n    ),\r\n    \"Video\": (\r\n        ('vhs', 'VHS Tape'),\r\n        ('dvd', 'DVD'),\r\n    ),\r\n   \"unknown\": \"Unknown\"\r\n}\r\n}}}\r\n\r\nOnce 3.7 is the lowest supported version we should document that this is supported, and ensure that it works correctly.",
+    "all_files": [
+      "django/contrib/admin/widgets.py",
+      "django/db/models/fields/__init__.py",
+      "django/forms/fields.py",
+      "django/forms/models.py",
+      "django/forms/widgets.py",
+      "django/utils/choices.py",
+      "docs/internals/contributing/writing-code/coding-style.txt",
+      "docs/ref/checks.txt",
+      "docs/ref/contrib/admin/actions.txt",
+      "docs/ref/forms/fields.txt",
+      "docs/ref/forms/widgets.txt",
+      "docs/ref/models/conditional-expressions.txt",
+      "docs/ref/models/fields.txt",
+      "docs/ref/models/instances.txt",
+      "docs/releases/5.0.txt",
+      "docs/topics/db/managers.txt",
+      "docs/topics/db/models.txt",
+      "docs/topics/forms/modelforms.txt",
+      "tests/field_deconstruction/tests.py",
+      "tests/forms_tests/field_tests/test_choicefield.py",
+      "tests/forms_tests/widget_tests/test_choicewidget.py",
+      "tests/forms_tests/widget_tests/test_radioselect.py",
+      "tests/forms_tests/widget_tests/test_select.py",
+      "tests/invalid_models_tests/test_ordinary_fields.py",
+      "tests/migrations/test_writer.py",
+      "tests/model_fields/models.py",
+      "tests/model_fields/test_integerfield.py",
+      "tests/model_fields/tests.py",
+      "tests/utils_tests/test_choices.py"
+    ],
+    "subsystem_files": [
+      "django/forms/fields.py",
+      "django/forms/models.py",
+      "django/forms/widgets.py"
+    ]
+  },
+  {
+    "pr_number": 17435,
+    "title": "Fixed #34927 -- Fixed admin system check for inlines with foreign keys to proxy models.",
+    "merged_at": "2023-11-02T10:23:44Z",
+    "merge_commit_sha": "65c283be163212f5679b5edbd6a24c88b3af04ce",
+    "linked_ticket": 34927,
+    "trac_summary": "ModelAdmin for model with InlineModelAdmin for proxy class reference results in admin.E202",
+    "problem_statement": "Ticket #34927: ModelAdmin for model with InlineModelAdmin for proxy class reference results in admin.E202\n\nThis is similar to #30273 and #32975. A class references a proxy model, and we define an inline for the proxied model. This fails with admin.E202 because Django does not recognize that the FK to the proxy model is the same as an FK to the proxied model.\r\n\r\nAssume models as follows:\r\n\r\n{{{\r\nclass Reporter(models.Model):\r\n    name = models.CharField(max_length=50)\r\n\r\nclass Journalist(Reporter):\r\n    class Meta:\r\n        proxy = True\r\n\r\nclass Article(models.Model):\r\n    reporter = models.ForeignKey(Journalist, on_delete=models.CASCADE)\r\n}}}\r\n\r\nand an admin as follows:\r\n{{{\r\nclass ArticleInline(admin.TabularInline):\r\n    model = Article\r\n    fk_name = 'reporter'\r\n\r\n@admin.register(Reporter)\r\nclass ReporterAdmin(admin.ModelAdmin):\r\n    inlines = [ArticleInline]\r\n}}}\r\n\r\nThis will result in {{{<class 'testapp.admin.ArticleInline'>: (admin.E202) fk_name 'reporter' is not a ForeignKey to 'testapp.Reporter'.}}}\r\n \r\nThe problem seems to be that the parent list does not include the model itself, and as such Django does not recognize the equality here.",
+    "all_files": [
+      "AUTHORS",
+      "django/forms/models.py",
+      "tests/modeladmin/test_checks.py"
+    ],
+    "subsystem_files": [
+      "django/forms/models.py"
+    ]
+  },
+  {
+    "pr_number": 17538,
+    "title": "Refs #34380 -- Added FORMS_URLFIELD_ASSUME_HTTPS transitional setting.",
+    "merged_at": "2023-11-28T19:04:21Z",
+    "merge_commit_sha": "a4931cd75a1780923b02e43475ba5447df3adb31",
+    "linked_ticket": 34380,
+    "trac_summary": "Make URLField assume \"https\".",
+    "problem_statement": "Ticket #34380: Make URLField assume \"https\".\n\nIn `django.forms.fields.URLField.to_python` the assumption is made that the `http` (no S) is a good default scheme for URLs that do not specify a scheme when submitted.\r\n\r\nEntering `example.com` in a URLField will give `http://example.com` as cleaned data.\r\n\r\nRef: https://github.com/django/django/blame/main/django/forms/fields.py#L772-L774\r\n\r\nI think URLField should assume the safe option `https`.\r\n\r\nI've notified the security team, and they didn't see this as a security issue.",
+    "all_files": [
+      "django/conf/__init__.py",
+      "django/conf/global_settings.py",
+      "django/forms/fields.py",
+      "docs/internals/deprecation.txt",
+      "docs/ref/forms/fields.txt",
+      "docs/ref/settings.txt",
+      "docs/releases/5.0.txt",
+      "tests/forms_tests/field_tests/test_urlfield.py",
+      "tests/model_forms/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/fields.py"
+    ]
+  },
+  {
+    "pr_number": 17887,
+    "title": "Fixed #35236 -- Used Field.attname/column attributes instead of get_attname()/get_attname_column().",
+    "merged_at": "2024-02-20T12:11:01Z",
+    "merge_commit_sha": "31314980be428c0ab8a6cf40cce0a0c17ead8ec6",
+    "linked_ticket": 35236,
+    "trac_summary": "Access Field.attname and Field.column directly",
+    "problem_statement": "Ticket #35236: Access Field.attname and Field.column directly\n\nMany field references call `Field.get_attname_column()` or `Field.get_attname()`, despite the `attname` and `column` attributes containing the computed results (after `contribute_to_class()`). Updating those call sites to plain attribute access eliminates some function calls, a worthy small speedup.\r\n\r\nFrom a profile of system checks on a smaller project, there were ~2k calls between the versions of each method:\r\n\r\n* 630 for `Field.get_attname_column()`\r\n* 208 for `ForeignKey.get_attname_column()`\r\n* 666 for `Field.get_attname()`\r\n* 431 for `ForeignKey.get_attname()`\r\n\r\nAll of these are eliminated by moving to attribute access.",
+    "all_files": [
+      "django/contrib/admin/views/main.py",
+      "django/contrib/contenttypes/fields.py",
+      "django/contrib/contenttypes/forms.py",
+      "django/core/serializers/xml_serializer.py",
+      "django/db/models/base.py",
+      "django/db/models/expressions.py",
+      "django/db/models/query.py",
+      "django/forms/models.py"
+    ],
+    "subsystem_files": [
+      "django/forms/models.py"
+    ]
+  },
+  {
+    "pr_number": 17893,
+    "title": "Fixed #35241 -- Cached model's full parent list.",
+    "merged_at": "2024-02-26T05:12:37Z",
+    "merge_commit_sha": "73d5eb808435bcf27ebc935847196ac9e97b6ddc",
+    "linked_ticket": 35241,
+    "trac_summary": "Cache Model._meta.get_parent_list()",
+    "problem_statement": "Ticket #35241: Cache Model._meta.get_parent_list()\n\nAnother candidate for caching, like #35230 and #35232, following the same system check profiling.\r\n\r\n`Model._meta.get_parent_list()` computes the flattened list of ancestor models by MRO. This list is immutable, deterministic, and recursively constructed through the inheritance hierarchy. These properties make it a prime candidate for caching.\r\n\r\nI found this method was taking ~1% (0.39ms) of the total runtime for system checks on a project with 118 models. After adding caching, it\u2019s reduced to a negligible amount (<0.01ms).\r\n\r\n`get_parent_list()` is called in many other code paths, so caching will help all of those too.",
+    "all_files": [
+      "django/contrib/admin/helpers.py",
+      "django/db/models/base.py",
+      "django/db/models/deletion.py",
+      "django/db/models/expressions.py",
+      "django/db/models/options.py",
+      "django/db/models/query.py",
+      "django/db/models/query_utils.py",
+      "django/db/models/sql/compiler.py",
+      "django/forms/models.py",
+      "tests/model_meta/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/models.py"
+    ]
+  },
+  {
+    "pr_number": 17613,
+    "title": "Fixed #29942 -- Used linkcode sphinx extension instead of viewcode. ",
+    "merged_at": "2024-05-15T01:08:30Z",
+    "merge_commit_sha": "b691accea13da0f703728b1d62657cb7ba87da60",
+    "linked_ticket": 29942,
+    "trac_summary": "viewsource links to contrib.auth.forms not appearing",
+    "problem_statement": "Ticket #29942: viewsource links to contrib.auth.forms not appearing\n\nDev URL borken: https://docs.djangoproject.com/en/dev/_modules/django/contrib/auth/forms/\r\n\r\nThis \"1.8\" URL works: https://docs.djangoproject.com/en/1.8/_modules/django/contrib/auth/forms/\r\n\r\nBut navigating to the Dev version breaks with 404",
+    "all_files": [
+      "django/forms/formsets.py",
+      "docs/_ext/github_links.py",
+      "docs/conf.py",
+      "tests/sphinx/__init__.py",
+      "tests/sphinx/test_github_links.py",
+      "tests/sphinx/testdata/package/__init__.py",
+      "tests/sphinx/testdata/package/import_error.py",
+      "tests/sphinx/testdata/package/module.py",
+      "tests/sphinx/testdata/package/other_module.py",
+      "tests/sphinx/testdata/package/wildcard_base.py",
+      "tests/sphinx/testdata/package/wildcard_module.py"
+    ],
+    "subsystem_files": [
+      "django/forms/formsets.py"
+    ]
+  },
+  {
+    "pr_number": 18237,
+    "title": "Fixed #35483 -- Added validation for NUL characters in ModelChoiceField and ModelMultipleChoiceField",
+    "merged_at": "2024-06-17T10:19:26Z",
+    "merge_commit_sha": "38ad710aba885ad26944ff5708ce1a02a446d2d3",
+    "linked_ticket": 35483,
+    "trac_summary": "ModelMultipleChoiceField with CharField key throws ValueError if data contains NUL (0x00) characters",
+    "problem_statement": "Ticket #35483: ModelMultipleChoiceField with CharField key throws ValueError if data contains NUL (0x00) characters\n\nIn a form using a ModelMultipleChoiceField with a model that has a CharField primary key, I'm getting server errors when a request submits input with a nul (0x00) character. This is resulting from a ValueError raised by the postgresql backend. It happens whether the data is submitted as a query string or in the request body.\r\n\r\nI've tried adding an explicit ProhibitNullCharactersValidator to the field, but this fails because the field's clean method runs validators after evaluating whether the input is a member of the queryset.\r\n\r\nA fairly minimal example that exhibits this is:\r\n\r\n{{{\r\nclass MyModel(models.Model):\r\n    slug = models.CharField(primary_key=True)\r\n\r\nclass MyForm(forms.Form):\r\n    field = forms.ModelMultipleChoiceField(queryset=MyModel.objects.all())\r\n\r\ndef my_view(request):\r\n    form = MyForm(data=request.GET)\r\n    if form.is_valid():\r\n        return HttpResponse(\"yay\")\r\n    return HttpResponse(\"boo\", status=400)\r\n}}}\r\n\r\nWith that running, the following triggers the error:\r\n{{{\r\n$ curl 'http://localhost:8000/my-view?field=hi%00'\r\n}}}\r\n\r\nThe output from the Django dev server is\r\n{{{\r\nERROR: django.request:241: Internal Server Error: /my-view\r\nTraceback (most recent call last):\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/core/handlers/exception.py\", line 55, in inner\r\n    response = get_response(request)\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/core/handlers/base.py\", line 197, in _get_response\r\n    response = wrapped_callback(request, *callback_args, **callback_kwargs)\r\n  File \"/workspace/ietf/doc/views_search.py\", line 98, in my_view\r\n    if form.is_valid():\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/forms/forms.py\", line 201, in is_valid\r\n    return self.is_bound and not self.errors\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/forms/forms.py\", line 196, in errors\r\n    self.full_clean()\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/forms/forms.py\", line 433, in full_clean\r\n    self._clean_fields()\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/forms/forms.py\", line 445, in _clean_fields\r\n    value = field.clean(value)\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/forms/models.py\", line 1590, in clean\r\n    qs = self._check_values(value)\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/forms/models.py\", line 1623, in _check_values\r\n    pks = {str(getattr(o, key)) for o in qs}\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/db/models/query.py\", line 398, in __iter__\r\n    self._fetch_all()\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/db/models/query.py\", line 1881, in _fetch_all\r\n    self._result_cache = list(self._iterable_class(self))\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/db/models/query.py\", line 91, in __iter__\r\n    results = compiler.execute_sql(\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/db/models/sql/compiler.py\", line 1562, in execute_sql\r\n    cursor.execute(sql, params)\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/db/backends/utils.py\", line 102, in execute\r\n    return super().execute(sql, params)\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/db/backends/utils.py\", line 67, in execute\r\n    return self._execute_with_wrappers(\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/db/backends/utils.py\", line 80, in _execute_with_wrappers\r\n    return executor(sql, params, many, context)\r\n  File \"/home/dev/.local/lib/python3.9/site-packages/django/db/backends/utils.py\", line 89, in _execute\r\n    return self.cursor.execute(sql, params)\r\nValueError: A string literal cannot contain NUL (0x00) characters.\r\n[27/May/2024 08:02:37] \"GET /my-view?field=hi%00 HTTP/1.0\" 500 180131\r\n}}}\r\n\r\nAs a workaround, replacing forms.ModelMultipleChoiceField with\r\n{{{\r\nclass MyModelMultipleChoiceField(forms.ModelMultipleChoiceField):\r\n    validate_no_nulls = validators.ProhibitNullCharactersValidator()\r\n    def clean(self, value):\r\n        for item in value:\r\n            self.validate_no_nulls(item)\r\n        return super().clean(value)\r\n}}}\r\ncorrectly handles the same input, with only \r\n{{{\r\n[27/May/2024 08:04:22] \"GET /my-view?field=hi%00 HTTP/1.0\" 400 3\r\n}}}\r\nin the server log.\r\n\r\nI'm seeing this with Django 4.2.13 using the postgresql backend with psycopg2 2.99 against PostgreSQL 14.6.",
+    "all_files": [
+      "django/forms/models.py",
+      "tests/model_forms/test_modelchoicefield.py",
+      "tests/model_forms/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/models.py"
+    ]
+  },
+  {
+    "pr_number": 18377,
+    "title": "Fixed #35598 -- Added SearchInput widget.",
+    "merged_at": "2024-07-31T11:11:46Z",
+    "merge_commit_sha": "30a60e84923c18f3b2c725f7a31e521a833b8057",
+    "linked_ticket": 35598,
+    "trac_summary": "Add SearchInput widget",
+    "problem_statement": "Ticket #35598: Add SearchInput widget\n\n[https://forum.djangoproject.com/t/adding-searchinput-widget/32496 Relevant forum discussion] \r\n\r\nAdd a {{{ SearchInput }}} widget that would render as\r\n\r\n{{{\r\n<input type=\"search\" ...>\r\n}}}",
+    "all_files": [
+      "AUTHORS",
+      "django/forms/jinja2/django/forms/widgets/search.html",
+      "django/forms/templates/django/forms/widgets/search.html",
+      "django/forms/widgets.py",
+      "docs/ref/forms/widgets.txt",
+      "docs/releases/5.2.txt",
+      "tests/forms_tests/widget_tests/test_searchinput.py"
+    ],
+    "subsystem_files": [
+      "django/forms/jinja2/django/forms/widgets/search.html",
+      "django/forms/templates/django/forms/widgets/search.html",
+      "django/forms/widgets.py"
+    ]
+  },
+  {
+    "pr_number": 18413,
+    "title": "Fixed #35599 -- Added ColorInput widget",
+    "merged_at": "2024-08-02T07:51:49Z",
+    "merge_commit_sha": "946c3cf7342cc40c2d8e3d865c96a4ec990f76f4",
+    "linked_ticket": 35599,
+    "trac_summary": "Add ColorInput widget",
+    "problem_statement": "Ticket #35599: Add ColorInput widget\n\n[https://forum.djangoproject.com/t/adding-searchinput-widget/32496 Relevant forum discussion] \r\n\r\nAdd a {{{ ColorInput }}} widget that would render as\r\n\r\n{{{\r\n<input type=\"color\" ...>\r\n}}}",
+    "all_files": [
+      "AUTHORS",
+      "django/forms/jinja2/django/forms/widgets/color.html",
+      "django/forms/templates/django/forms/widgets/color.html",
+      "django/forms/widgets.py",
+      "docs/ref/forms/widgets.txt",
+      "docs/releases/5.2.txt",
+      "tests/forms_tests/widget_tests/test_colorinput.py"
+    ],
+    "subsystem_files": [
+      "django/forms/jinja2/django/forms/widgets/color.html",
+      "django/forms/templates/django/forms/widgets/color.html",
+      "django/forms/widgets.py"
+    ]
+  },
+  {
+    "pr_number": 18437,
+    "title": "Fixed #35601 -- Added TelInput widget.",
+    "merged_at": "2024-08-02T09:31:54Z",
+    "merge_commit_sha": "b478cae00643d6730746f2614792b35a7d3187ff",
+    "linked_ticket": 35601,
+    "trac_summary": "Add TelInput widget",
+    "problem_statement": "Ticket #35601: Add TelInput widget\n\n[https://forum.djangoproject.com/t/adding-searchinput-widget/32496 Relevant forum discussion] \r\n\r\nAdd a {{{ TelInput }}} widget that would render as\r\n\r\n{{{\r\n<input type=\"tel\" ...>\r\n}}}",
+    "all_files": [
+      "AUTHORS",
+      "django/forms/jinja2/django/forms/widgets/tel.html",
+      "django/forms/templates/django/forms/widgets/tel.html",
+      "django/forms/widgets.py",
+      "docs/ref/forms/widgets.txt",
+      "docs/releases/5.2.txt",
+      "tests/forms_tests/widget_tests/test_telinput.py"
+    ],
+    "subsystem_files": [
+      "django/forms/jinja2/django/forms/widgets/tel.html",
+      "django/forms/templates/django/forms/widgets/tel.html",
+      "django/forms/widgets.py"
+    ]
+  },
+  {
+    "pr_number": 18464,
+    "title": "Fixed #35666 -- Documented stacklevel testing and adjusted test suite accordingly.",
+    "merged_at": "2024-08-28T14:44:05Z",
+    "merge_commit_sha": "57307bbc7d88927989cf5b314f16d6e13ade04e6",
+    "linked_ticket": 35666,
+    "trac_summary": "Test stack level of deprecation warnings",
+    "problem_statement": "Ticket #35666: Test stack level of deprecation warnings\n\nWith [https://github.com/django/django/pull/18463/ another improperly set] instance of `stacklevel` and [https://github.com/django/django/pull/17490 few] [https://github.com/django/django/pull/17351 others] behind our belt I think it's worth documenting and adjusting our test suite to systematically test against the `assertWarnsMessage.filename` to ensure is it properly assigned.",
+    "all_files": [
+      "django/contrib/staticfiles/finders.py",
+      "django/core/files/storage/filesystem.py",
+      "django/db/backends/base/base.py",
+      "django/db/backends/base/operations.py",
+      "django/db/models/base.py",
+      "django/db/models/fields/mixins.py",
+      "django/db/models/fields/related.py",
+      "django/db/models/fields/reverse_related.py",
+      "django/forms/renderers.py",
+      "django/http/response.py",
+      "docs/internals/contributing/writing-code/submitting-patches.txt",
+      "docs/releases/5.1.1.txt",
+      "tests/admin_utils/test_logentry.py",
+      "tests/backends/base/test_operations.py",
+      "tests/backends/tests.py",
+      "tests/basic/tests.py",
+      "tests/constraints/tests.py",
+      "tests/contenttypes_tests/test_fields.py",
+      "tests/deprecation/tests.py",
+      "tests/file_storage/tests.py",
+      "tests/foreign_object/tests.py",
+      "tests/forms_tests/field_tests/test_urlfield.py",
+      "tests/forms_tests/tests/test_renderers.py",
+      "tests/gis_tests/gdal_tests/test_geom.py",
+      "tests/gis_tests/test_geoip2.py",
+      "tests/handlers/tests.py",
+      "tests/many_to_many/tests.py",
+      "tests/many_to_one/tests.py",
+      "tests/model_enums/tests.py",
+      "tests/model_fields/test_mixins.py",
+      "tests/modeladmin/tests.py",
+      "tests/one_to_one/tests.py",
+      "tests/prefetch_related/tests.py",
+      "tests/staticfiles_tests/test_finders.py",
+      "tests/update_only_fields/tests.py",
+      "tests/urlpatterns/tests.py",
+      "tests/utils_tests/test_itercompat.py"
+    ],
+    "subsystem_files": [
+      "django/forms/renderers.py"
+    ]
+  },
+  {
+    "pr_number": 18450,
+    "title": "Refs #373 -- Added Model._is_pk_set().",
+    "merged_at": "2024-09-09T20:46:50Z",
+    "merge_commit_sha": "5865ff5adcf64da03d306dc32b36e87ae6927c85",
+    "linked_ticket": null,
+    "trac_summary": "",
+    "problem_statement": "Refs #373 -- Added Model._is_pk_set().\n\n**[GSoC-2024]**\r\n\r\n# Trac ticket number\r\nticket-373\r\n\r\n# Branch description\r\nAdded the `Model._is_pk_set()` function as suggested by @charettes and @LilyFoote (https://github.com/django/django/pull/18056#discussion_r1604282430).\r\n\r\nIt's a simple utility function for checking if the primary key has been set on an object.\r\n\r\nIt's a pre-requisite for composite primary keys (https://github.com/django/django/pull/18056).\r\n\r\nThis function will get modified by the [composite primary keys patch](https://github.com/django/django/pull/18056/files#diff-1c8b882c73bfda668d5451d4578c97191b0ebc0f088d0c0ba2296ab89b428c44R672).\r\n\r\n# Checklist\r\n- [X] This PR targets the `main` branch. <!-- Backports will be evaluated and done by mergers, when necessary. -->\r\n- [X] The commit message is written in past tense, mentions the ticket number, and ends with a period.\r\n- [X] I have checked the \"Has patch\" ticket flag in the Trac system.\r\n- [X] I have added or updated relevant tests.\r\n- [X] I have added or updated relevant docs, including release notes if applicable.\r\n- [X] I have attached screenshots in both light and dark modes for any UI changes.\r\n",
+    "all_files": [
+      "django/contrib/contenttypes/forms.py",
+      "django/contrib/postgres/constraints.py",
+      "django/db/models/base.py",
+      "django/db/models/constraints.py",
+      "django/db/models/fields/related.py",
+      "django/db/models/fields/related_descriptors.py",
+      "django/db/models/fields/related_lookups.py",
+      "django/db/models/query.py",
+      "django/db/models/query_utils.py",
+      "django/forms/models.py",
+      "docs/ref/models/instances.txt",
+      "docs/releases/5.2.txt",
+      "tests/basic/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/models.py"
+    ]
+  },
+  {
+    "pr_number": 18871,
+    "title": "Refs #32819 -- Added id to ErrorList class and template.",
+    "merged_at": "2024-12-05T09:24:39Z",
+    "merge_commit_sha": "edd74c3417fa3a0b29295012ff31dbe44843303c",
+    "linked_ticket": 32819,
+    "trac_summary": "Fields\u2019 help text and errors should be associated with input",
+    "problem_statement": "Ticket #32819: Fields\u2019 help text and errors should be associated with input\n\nWith Django\u2019s default field rendering, all field errors are rendered as a list above the field\u2019s label, and help text is rendered after the field\u2019s form element. Example with `as_p`:\r\n\r\n{{{\r\n<ul class=\"errorlist\">\r\n  <li>This field is required.</li>\r\n</ul>\r\n<p>\r\n  <label for=\"id_duration_required\">Duration required:</label>\r\n  <input type=\"text\" name=\"duration_required\" required=\"\" id=\"id_duration_required\">\r\n  <span class=\"helptext\">Help</span>\r\n</p>\r\n}}}\r\n\r\nOne problem for screen reader users is that the association between the errors and the field, and between the help text and the field, is only communicated visually. This is a failure of either WCAG 2.1 level A [https://www.w3.org/WAI/WCAG21/Understanding/info-and-relationships.html SC 1.3.1: Info and Relationships], or [https://www.w3.org/WAI/WCAG21/Understanding/labels-or-instructions SC 3.3.2: Labels or Instructions]. More importantly, it just makes it harder than necessary for screen reader users to make use of help text, and to identify error messages.\r\n\r\nThe fix is relatively straightforward \u2013 using `aria-describedby`, as documented in the (non-normative) [https://www.w3.org/WAI/WCAG21/Techniques/aria/ARIA1.html ARIA1 Using the aria-describedby property to provide a descriptive label for user interface controls] technique. Here is another well-known accessibility-oriented UI library that implements this technique: [https://design-system.service.gov.uk/components/text-input/#error-messages GOV.UK design system \u2013 text input with error message].\r\n\r\nHere is what implementing `aria-describedby` would look like in the same example as above:\r\n\r\n{{{\r\n<div class=\"errorlist\" id=\"id_duration_required_errorlist\">\r\n  <p>This field is required.</p>\r\n</div>\r\n<p>\r\n  <label for=\"id_duration_required\">Duration required:</label>\r\n  <input type=\"text\" name=\"duration_required\" required=\"\" id=\"id_duration_required\" aria-describedby=\"id_duration_required_errorlist id_duration_required_helptext\">\r\n  <span class=\"helptext\" id=\"id_duration_required_helptext\">Help</span>\r\n</p>\r\n}}}\r\n\r\nWe have additional `id` attributes, `aria-describedby`, and `errorlist` is no longer a `<ul>`. Result in VoiceOver:\r\n\r\n[[Image(https://code.djangoproject.com/raw-attachment/ticket/32819/email-required-ariadescribedby.gif)]]\r\n\r\nUnfortunately I tried to have this with the `errorlist` kept as a `ul`, but it wasn\u2019t announced by VoiceOver. I haven\u2019t heard of this limitation before so am not sure why that might be the case \u2013\u00a0I\u2019d appreciate others taking a look if possible.",
+    "all_files": [
+      "django/forms/forms.py",
+      "django/forms/jinja2/django/forms/errors/list/ul.html",
+      "django/forms/templates/django/forms/errors/list/ul.html",
+      "django/forms/utils.py",
+      "docs/ref/forms/api.txt",
+      "docs/releases/5.2.txt",
+      "tests/forms_tests/tests/test_error_messages.py",
+      "tests/forms_tests/tests/test_forms.py",
+      "tests/forms_tests/tests/test_i18n.py",
+      "tests/model_forms/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/forms.py",
+      "django/forms/jinja2/django/forms/errors/list/ul.html",
+      "django/forms/templates/django/forms/errors/list/ul.html",
+      "django/forms/utils.py"
+    ]
+  },
+  {
+    "pr_number": 18782,
+    "title": "Fixed #35886 -- Moved object-based Script media assets to the public API",
+    "merged_at": "2025-01-02T12:08:13Z",
+    "merge_commit_sha": "989329344aabe8ef7a5e55bebfde53f0e00f42e2",
+    "linked_ticket": 35886,
+    "trac_summary": "Move object-based script media assets to the public API",
+    "problem_statement": "Ticket #35886: Move object-based script media assets to the public API\n\nThis is a successor to #29490 and a result of the discussion on #22298 and [https://forum.djangoproject.com/t/rejuvenating-vs-deprecating-form-media/21285 its corresponding forum thread].\r\n\r\nThis ticket aims to move object-based media assets to the public API and documentation.\r\nA sample implementation has been part of the test suite for years, see also: https://github.com/django/django/blob/97a6a678c406b0049bd17bcd34f1d71d96141994/tests/forms_tests/tests/test_media.py#L717-L771\r\n\r\nThe goal is to support form assets with modern attributes, like:\r\n\r\n{{{\r\n<script type=\"module\">\r\n<!-- or -->\r\n<script defer>\r\n<!-- or -->\r\n<script async>\r\n}}}\r\n\r\nAnd other standardized attributes, see https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script\r\n\r\nThe same can be done for stylesheets via the link tag, which does support many more attributes than `media`, see also: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/link\r\n\r\n**Considerations**\r\n\r\nWe could deprecate \"string\" based assets. This may simplify `django.forms` since, the CSS grouping wouldn't be needed anymore.",
+    "all_files": [
+      "django/forms/widgets.py",
+      "docs/releases/5.2.txt",
+      "docs/topics/forms/media.txt",
+      "tests/forms_tests/tests/test_media.py"
+    ],
+    "subsystem_files": [
+      "django/forms/widgets.py"
+    ]
+  },
+  {
+    "pr_number": 17520,
+    "title": "Fixed #32819 -- Established relationship between form fields and their errors.",
+    "merged_at": "2025-01-02T15:40:40Z",
+    "merge_commit_sha": "987854ba44b497b195536199f8f6d1dc440a43ca",
+    "linked_ticket": 32819,
+    "trac_summary": "Fields\u2019 help text and errors should be associated with input",
+    "problem_statement": "Ticket #32819: Fields\u2019 help text and errors should be associated with input\n\nWith Django\u2019s default field rendering, all field errors are rendered as a list above the field\u2019s label, and help text is rendered after the field\u2019s form element. Example with `as_p`:\r\n\r\n{{{\r\n<ul class=\"errorlist\">\r\n  <li>This field is required.</li>\r\n</ul>\r\n<p>\r\n  <label for=\"id_duration_required\">Duration required:</label>\r\n  <input type=\"text\" name=\"duration_required\" required=\"\" id=\"id_duration_required\">\r\n  <span class=\"helptext\">Help</span>\r\n</p>\r\n}}}\r\n\r\nOne problem for screen reader users is that the association between the errors and the field, and between the help text and the field, is only communicated visually. This is a failure of either WCAG 2.1 level A [https://www.w3.org/WAI/WCAG21/Understanding/info-and-relationships.html SC 1.3.1: Info and Relationships], or [https://www.w3.org/WAI/WCAG21/Understanding/labels-or-instructions SC 3.3.2: Labels or Instructions]. More importantly, it just makes it harder than necessary for screen reader users to make use of help text, and to identify error messages.\r\n\r\nThe fix is relatively straightforward \u2013 using `aria-describedby`, as documented in the (non-normative) [https://www.w3.org/WAI/WCAG21/Techniques/aria/ARIA1.html ARIA1 Using the aria-describedby property to provide a descriptive label for user interface controls] technique. Here is another well-known accessibility-oriented UI library that implements this technique: [https://design-system.service.gov.uk/components/text-input/#error-messages GOV.UK design system \u2013 text input with error message].\r\n\r\nHere is what implementing `aria-describedby` would look like in the same example as above:\r\n\r\n{{{\r\n<div class=\"errorlist\" id=\"id_duration_required_errorlist\">\r\n  <p>This field is required.</p>\r\n</div>\r\n<p>\r\n  <label for=\"id_duration_required\">Duration required:</label>\r\n  <input type=\"text\" name=\"duration_required\" required=\"\" id=\"id_duration_required\" aria-describedby=\"id_duration_required_errorlist id_duration_required_helptext\">\r\n  <span class=\"helptext\" id=\"id_duration_required_helptext\">Help</span>\r\n</p>\r\n}}}\r\n\r\nWe have additional `id` attributes, `aria-describedby`, and `errorlist` is no longer a `<ul>`. Result in VoiceOver:\r\n\r\n[[Image(https://code.djangoproject.com/raw-attachment/ticket/32819/email-required-ariadescribedby.gif)]]\r\n\r\nUnfortunately I tried to have this with the `errorlist` kept as a `ul`, but it wasn\u2019t announced by VoiceOver. I haven\u2019t heard of this limitation before so am not sure why that might be the case \u2013\u00a0I\u2019d appreciate others taking a look if possible.",
+    "all_files": [
+      "django/forms/boundfield.py",
+      "docs/ref/forms/api.txt",
+      "docs/releases/5.2.txt",
+      "tests/forms_tests/tests/test_forms.py"
+    ],
+    "subsystem_files": [
+      "django/forms/boundfield.py"
+    ]
+  },
+  {
+    "pr_number": 19043,
+    "title": "Fixed #35521 -- Allowed overriding BoundField class on fields, forms and renderer.",
+    "merged_at": "2025-01-15T20:04:26Z",
+    "merge_commit_sha": "6a7ee02f5994c65bbefe92a3da74f22326970cf9",
+    "linked_ticket": 35521,
+    "trac_summary": "Allow overriding BoundField class on forms and fields",
+    "problem_statement": "Ticket #35521: Allow overriding BoundField class on forms and fields\n\nIt would be useful if there was an easy way to add CSS classes to the HTML element which is generated when rendering a `BoundField`. I propose adding `field_css_class`, similar to `required_css_class` and `error_css_class`. https://docs.djangoproject.com/en/5.0/ref/forms/api/#styling-required-or-erroneous-form-rows\r\n\r\nSomething like this has already been rejected in the past here: https://code.djangoproject.com/ticket/29189 . As I understand it the reason for the rejection was the upcoming templates-based form rendering and not really the feature itself. I may have missed the point though.\r\n\r\nHowever, I still think there'd be some value in this even though we have templates-based renderers now. The `div` (in the case of the div renderer) is generated here: https://github.com/django/django/blob/main/django/forms/templates/django/forms/div.html , so it's not just about overriding `django/forms/field.html` if you want to avoid adding another nesting level. Also, `css_classes` exists and is documented.\r\n\r\nCode-wise I propose extending the `css_classes` method as follows:\r\n\r\nhttps://github.com/django/django/blob/e2428292abaca4758a7508175d31667fe2dff57c/django/forms/boundfield.py#L220-L231\r\n\r\n{{{\r\n         extra_classes = set(extra_classes or [])\r\n+        if hasattr(self.form, \"field_css_class\"):\r\n+            extra_classes.add(self.form.field_css_class)\r\n         if self.errors and hasattr(self.form, \"error_css_class\"):\r\n}}}\r\n\r\nI'm willing to do the work if this is accepted.",
+    "all_files": [
+      "django/forms/fields.py",
+      "django/forms/forms.py",
+      "django/forms/renderers.py",
+      "docs/ref/forms/api.txt",
+      "docs/ref/forms/fields.txt",
+      "docs/ref/forms/renderers.txt",
+      "docs/releases/5.2.txt",
+      "tests/forms_tests/tests/test_forms.py"
+    ],
+    "subsystem_files": [
+      "django/forms/fields.py",
+      "django/forms/forms.py",
+      "django/forms/renderers.py"
+    ]
+  },
+  {
+    "pr_number": 18929,
+    "title": "Bootstrapped Django 6.0.",
+    "merged_at": "2025-01-15T21:28:37Z",
+    "merge_commit_sha": "37373d9ae969f3c3b8b1ffcec9ffb0e00ec267c3",
+    "linked_ticket": null,
+    "trac_summary": "",
+    "problem_statement": "Bootstrapped Django 6.0.\n\nTo be merged after the 5.2 feature freeze (Jan 15th)\r\n\r\n**Some commits have been cherry picked onto this branch to get the test suite to pass. These will be merged prior to this PR**",
+    "all_files": [
+      "django/__init__.py",
+      "django/conf/__init__.py",
+      "django/conf/global_settings.py",
+      "django/contrib/admin/models.py",
+      "django/contrib/admin/options.py",
+      "django/contrib/admin/views/main.py",
+      "django/contrib/auth/admin.py",
+      "django/contrib/auth/base_user.py",
+      "django/contrib/auth/hashers.py",
+      "django/contrib/contenttypes/fields.py",
+      "django/contrib/gis/db/backends/oracle/adapter.py",
+      "django/contrib/gis/db/backends/oracle/introspection.py",
+      "django/contrib/gis/gdal/geometries.py",
+      "django/contrib/gis/geoip2.py",
+      "django/core/files/storage/filesystem.py",
+      "django/db/backends/base/operations.py",
+      "django/db/backends/oracle/base.py",
+      "django/db/backends/oracle/features.py",
+      "django/db/backends/oracle/introspection.py",
+      "django/db/backends/oracle/operations.py",
+      "django/db/backends/oracle/oracledb_any.py",
+      "django/db/models/base.py",
+      "django/db/models/constraints.py",
+      "django/db/models/enums.py",
+      "django/db/models/fields/mixins.py",
+      "django/db/models/fields/related.py",
+      "django/db/models/fields/related_descriptors.py",
+      "django/db/models/fields/reverse_related.py",
+      "django/db/models/lookups.py",
+      "django/db/models/query.py",
+      "django/db/models/sql/datastructures.py",
+      "django/forms/fields.py",
+      "django/forms/renderers.py",
+      "django/urls/converters.py",
+      "django/utils/deprecation.py",
+      "django/utils/html.py",
+      "django/utils/itercompat.py",
+      "docs/conf.py",
+      "docs/faq/install.txt",
+      "docs/internals/contributing/writing-code/unit-tests.txt",
+      "docs/internals/deprecation.txt",
+      "docs/ref/contrib/admin/index.txt",
+      "docs/ref/contrib/contenttypes.txt",
+      "docs/ref/contrib/gis/functions.txt",
+      "docs/ref/contrib/gis/gdal.txt",
+      "docs/ref/contrib/gis/geoip2.txt",
+      "docs/ref/contrib/gis/geoquerysets.txt",
+      "docs/ref/contrib/gis/measure.txt",
+      "docs/ref/contrib/postgres/indexes.txt",
+      "docs/ref/databases.txt",
+      "docs/ref/files/storage.txt",
+      "docs/ref/forms/fields.txt",
+      "docs/ref/forms/renderers.txt",
+      "docs/ref/logging.txt",
+      "docs/ref/middleware.txt",
+      "docs/ref/migration-operations.txt",
+      "docs/ref/models/constraints.txt",
+      "docs/ref/models/expressions.txt",
+      "docs/ref/models/instances.txt",
+      "docs/ref/models/querysets.txt",
+      "docs/ref/settings.txt",
+      "docs/ref/templates/builtins.txt",
+      "docs/ref/urls.txt",
+      "docs/ref/utils.txt",
+      "docs/ref/validators.txt",
+      "docs/releases/5.0.txt",
+      "docs/releases/6.0.txt",
+      "docs/releases/index.txt",
+      "docs/topics/auth/default.txt",
+      "docs/topics/checks.txt",
+      "docs/topics/http/sessions.txt",
+      "docs/topics/http/urls.txt",
+      "docs/topics/testing/advanced.txt",
+      "docs/topics/testing/tools.txt",
+      "tests/admin_utils/models.py",
+      "tests/admin_utils/test_logentry.py",
+      "tests/admin_views/tests.py",
+      "tests/admin_widgets/tests.py",
+      "tests/auth_tests/test_hashers.py",
+      "tests/backends/base/test_operations.py",
+      "tests/backends/oracle/tests.py",
+      "tests/basic/tests.py",
+      "tests/constraints/tests.py",
+      "tests/contenttypes_tests/test_fields.py",
+      "tests/file_storage/tests.py",
+      "tests/foreign_object/tests.py",
+      "tests/forms_tests/field_tests/test_urlfield.py",
+      "tests/forms_tests/tests/test_error_messages.py",
+      "tests/forms_tests/tests/test_renderers.py",
+      "tests/generic_inline_admin/tests.py",
+      "tests/gis_tests/gdal_tests/test_geom.py",
+      "tests/gis_tests/test_geoip2.py",
+      "tests/many_to_many/tests.py",
+      "tests/many_to_one/tests.py",
+      "tests/model_enums/tests.py",
+      "tests/model_fields/test_mixins.py",
+      "tests/model_forms/tests.py",
+      "tests/modeladmin/tests.py",
+      "tests/one_to_one/tests.py",
+      "tests/prefetch_related/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/fields.py",
+      "django/forms/renderers.py"
+    ]
+  },
+  {
+    "pr_number": 19157,
+    "title": "Fixed #35676 -- Made BaseModelForm validate constraints that reference an InlineForeignKeyField.",
+    "merged_at": "2025-03-12T08:16:15Z",
+    "merge_commit_sha": "0ebea6e5c07485a36862e9b6e2be18d1694ad2c5",
+    "linked_ticket": 35676,
+    "trac_summary": "ExclusionConstraint that includes a ForeignKey fails validation in ModelForm",
+    "problem_statement": "Ticket #35676: ExclusionConstraint that includes a ForeignKey fails validation in ModelForm\n\nI'm not sure if the summary above is good, but let me demonstrate:\r\n\r\n{{{\r\nclass BlockedDaysConfig(models.Model):\r\n    name = models.CharField(max_length=255)\r\n\r\n\r\nclass BlockedDaysRange(models.Model):\r\n    config = models.ForeignKey(BlockedDaysConfig, on_delete=models.CASCADE, related_name='days')\r\n    date_range = DateRangeField()\r\n\r\n    class Meta:\r\n        constraints = (\r\n            ExclusionConstraint(\r\n                name='%(app_label)s_%(class)s_no_overlapping_ranges_per_config',\r\n                expressions=(\r\n                    ('config_id', RangeOperators.EQUAL, ),\r\n                    ('date_range', RangeOperators.OVERLAPS, ),\r\n                )\r\n            ),\r\n        )\r\n}}}\r\n\r\n`BlockedDaysRange` represents a range of blocked days. `BlockedDaysConfig` represents a range of these blocked days. Example:\r\nA BlockedDaysConfig with name \"School Holidays in Germany\" contains several BlockedDaysConfig entries, one for \"summer holidays\", one for \"winter holidays\", etc.\r\nThe exclusion constraint validates that the date ranges within one config do not overlap.\r\n\r\nNow I have configured a ModelAdmin for this:\r\n\r\n{{{\r\nclass BlockedDaysRangeInline(admin.TabularInline):\r\n    model = BlockedDaysRange\r\n\r\n\r\n@admin.register(BlockedDaysConfig)\r\nclass BlockedDaysConfigAdmin(admin.ModelAdmin):\r\n    inlines = (BlockedDaysRangeInline, )\r\n}}}\r\n\r\nThe problem now happens when saving, because `BaseModelForm._post_clean` will ''exclude'' the `InlineForeignKey` for `config` when calling `full_clean` (see https://github.com/django/django/blob/b99c608ea10cabc97a6b251cdb6e81ef2a83bdcf/django/forms/models.py#L477-L488).\r\nBecause `config` is in `exclude`, when `ExclusionConstraint` eventually calls `_get_field_value_map`, the `config` is not included and thus a nonsensical SQL query happens (`WHERE config_id=config_id and date_range && '[2024-01-01,2024-01-03)'::daterange`). This will now validate against ''any'' date ranges, not just ones with the same `config_id`.\r\nAs you can see from the comment in the code snippet linked above, this problem is already recognized for unique constraints, which are handled specially by `ModelForm`.",
+    "all_files": [
+      "AUTHORS",
+      "django/forms/models.py",
+      "docs/topics/forms/modelforms.txt",
+      "tests/inline_formsets/models.py",
+      "tests/inline_formsets/tests.py",
+      "tests/model_forms/models.py",
+      "tests/model_forms/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/models.py"
+    ]
+  },
+  {
+    "pr_number": 19678,
+    "title": "Fixed #35892 -- Supported Widget.use_fieldset in admin forms. ",
+    "merged_at": "2025-08-19T14:35:56Z",
+    "merge_commit_sha": "4187da258fe212d494cb578a0bc2b52c4979ab95",
+    "linked_ticket": 35892,
+    "trac_summary": "Support Widget.use_fieldset in admin forms",
+    "problem_statement": "Ticket #35892: Support Widget.use_fieldset in admin forms\n\nCurrently, the admin doesn't respect [https://docs.djangoproject.com/en/5.1/ref/forms/widgets/#django.forms.Widget.use_fieldset Widget.use_fieldset]\r\n\r\nWhen a widget has this set, the field should be rendered in a fieldset, ideally with a legend tag (or the fieldset using `aria-labelledby`) and have `aria-describedby` to associate the helptext to the fieldset\r\n\r\nAll admin widgets should be reviewed as to whether `use_fieldset` should be `True`\r\n\r\nSee this PR discussion for context: https://github.com/django/django/pull/18742#issuecomment-2460108968",
+    "all_files": [
+      "django/contrib/admin/helpers.py",
+      "django/contrib/admin/static/admin/css/forms.css",
+      "django/contrib/admin/static/admin/css/responsive.css",
+      "django/contrib/admin/static/admin/css/widgets.css",
+      "django/contrib/admin/static/admin/js/SelectFilter2.js",
+      "django/contrib/admin/static/admin/js/admin/DateTimeShortcuts.js",
+      "django/contrib/admin/templates/admin/auth/user/change_password.html",
+      "django/contrib/admin/templates/admin/includes/fieldset.html",
+      "django/contrib/admin/templates/admin/widgets/split_datetime.html",
+      "django/contrib/admin/widgets.py",
+      "django/forms/widgets.py",
+      "docs/intro/_images/admin05t.png",
+      "docs/intro/_images/admin07.png",
+      "docs/intro/_images/admin08t.png",
+      "js_tests/admin/DateTimeShortcuts.test.js",
+      "js_tests/admin/SelectFilter2.test.js",
+      "tests/admin_views/admin.py",
+      "tests/admin_views/models.py",
+      "tests/admin_views/tests.py",
+      "tests/admin_widgets/tests.py",
+      "tests/auth_tests/test_views.py",
+      "tests/forms_tests/widget_tests/test_clearablefileinput.py"
+    ],
+    "subsystem_files": [
+      "django/forms/widgets.py"
+    ]
+  },
+  {
+    "pr_number": 20471,
+    "title": "Fixed #36829 -- Revert unintended ClearableFileInput.use_fieldset change",
+    "merged_at": "2025-12-31T15:14:00Z",
+    "merge_commit_sha": "79ab0993d0f2253e10ea638bcefc98ec2d890a47",
+    "linked_ticket": 36829,
+    "trac_summary": "ClearableFileInput.use_fieldset became True in Django 6.0",
+    "problem_statement": "Ticket #36829: ClearableFileInput.use_fieldset became True in Django 6.0\n\nHowdy y'all,\r\n\r\n#35892 flipped `django.forms.widgets.ClearableFileInput.use_fieldset` from false to true.\r\n\r\nThe change can be found here: https://github.com/django/django/blame/4187da258fe212d494cb578a0bc2b52c4979ab95/django/forms/widgets.py#L533\r\n\r\nThis changes the form rendering outside the admin too. Probably just a small oversight and not an intentional change, since changes weren't accompanied by release notes.\r\n\r\nAnyhow, both the input and the `use_fieldset` are part of the public documentation, and changes must undergo deprecation.\r\n\r\nThe problem gets amplified with #36828, since the current fieldset implementation violates HTML and WCAG 2.1\r\n\r\nThe only affected version is 6.0. I would recommend providing a regression patch in the next bugfix release.\r\n\r\nCheers!\r\nJoe",
+    "all_files": [
+      "django/contrib/admin/widgets.py",
+      "django/forms/widgets.py",
+      "docs/releases/6.0.1.txt",
+      "tests/forms_tests/widget_tests/test_clearablefileinput.py"
+    ],
+    "subsystem_files": [
+      "django/forms/widgets.py"
+    ]
+  },
+  {
+    "pr_number": 20848,
+    "title": "Fixed #35870 -- Made blank choice label in forms more accessible.",
+    "merged_at": "2026-04-22T21:06:30Z",
+    "merge_commit_sha": "63c56cda133a85a158502891c40465bc0331d3d9",
+    "linked_ticket": 35870,
+    "trac_summary": "Allow customization of the blank option in select dropdowns",
+    "problem_statement": "Ticket #35870: Allow customization of the blank option in select dropdowns\n\nSelect dropdown inputs (`<select>`) may have an empty first choice meant to leave a blank value or inform the user that they need to pick an option.\r\n\r\nThe default current value for this option is `\"---------\"` and cannot be customized for the entire project at once. A developer must override each form field individually if they wish to change this value on their website, which is tedious and prone to errors.\r\n\r\nThe empty choice value is defined as `BLANK_CHOICE_DASH` in [https://github.com/django/django/blob/main/django/db/models/fields/__init__.py django.db.models.fields].\r\n\r\n== Accessibility\r\n\r\nThe current blank option is also inaccessible; I quote this description from a private ticket that was assigned to me, and therefore cannot be linked directly:\r\n\r\n> **Problem**\r\n> \r\n> Whenever a <select> dropdown has no option selected by default, a line of dashes is used inside of an <option>. The majority of screen reader/speech synthesiser combinations don't speak this, and so it can be confusing to hear essentially nothing. This is particularly true when navigating to the first choice from an option with text.\r\n> \r\n> **Solution**\r\n> \r\n> Use a more perceivable placeholder string for the first option, e.g. \"(select an option)\", using parentheses to disrupt first-letter keyboard navigation as little as possible.\r\n\r\n== Proposed change\r\n\r\nI foresee two options:\r\n\r\n1. Replace `BLANK_CHOICE_DASH` with a new, optional setting, which allows users to set the blank option for their project. For backwards compatibility, the default value of the new setting equals `\"---------\"`.\r\n2. Replace `BLANK_CHOICE_DASH` with a new, more descriptive value in core.\r\n\r\nOption 1 will be less disruptive, as this will not break existing behaviors. Option 2 will fix this problem for all users, but it would require translations for every language we offer.",
+    "all_files": [
+      "django/conf/__init__.py",
+      "django/conf/global_settings.py",
+      "django/contrib/admin/options.py",
+      "django/db/models/fields/__init__.py",
+      "django/db/models/fields/reverse_related.py",
+      "django/db/models/utils.py",
+      "django/forms/fields.py",
+      "django/forms/models.py",
+      "docs/internals/deprecation.txt",
+      "docs/intro/_images/admin09.png",
+      "docs/ref/forms/fields.txt",
+      "docs/ref/models/fields.txt",
+      "docs/ref/settings.txt",
+      "docs/releases/6.1.txt",
+      "tests/admin_views/test_actions.py",
+      "tests/admin_views/test_related_object_lookups.py",
+      "tests/admin_views/tests.py",
+      "tests/admin_widgets/tests.py",
+      "tests/forms_tests/field_tests/test_typedchoicefield.py",
+      "tests/forms_tests/locale/de/LC_MESSAGES/django.mo",
+      "tests/forms_tests/locale/de/LC_MESSAGES/django.po",
+      "tests/forms_tests/locale/de/__init__.py",
+      "tests/forms_tests/tests/test_forms.py",
+      "tests/forms_tests/tests/test_i18n.py",
+      "tests/forms_tests/widget_tests/test_radioselect.py",
+      "tests/model_fields/test_booleanfield.py",
+      "tests/model_fields/tests.py",
+      "tests/model_forms/test_modelchoicefield.py",
+      "tests/model_forms/tests.py",
+      "tests/model_formsets/tests.py",
+      "tests/modeladmin/tests.py"
+    ],
+    "subsystem_files": [
+      "django/forms/fields.py",
+      "django/forms/models.py"
+    ]
+  },
+  {
+    "pr_number": 21427,
+    "title": "Fixed #37147 -- Fixed rendering empty values for models with db_default on primary key.",
+    "merged_at": "2026-06-09T11:12:30Z",
+    "merge_commit_sha": "71af23d1f4678c4bf052e051d72e8928e1697de3",
+    "linked_ticket": 37147,
+    "trac_summary": "Empty form for inlines breaks when using db_default on primary key field",
+    "problem_statement": "Ticket #37147: Empty form for inlines breaks when using db_default on primary key field\n\nUsing `db_default` with the new `UUID4` or `UUID7` functions breaks saving inlines. For example,\r\n\r\n- `models.py`\r\n{{{#!python\r\nclass MyMain(models.Model):\r\n    uuid = models.UUIDField(primary_key=True, db_default=UUID7(), editable=False, verbose_name=\"UUID\")\r\n    name = models.CharField(max_length=100)\r\n\r\nclass MyChild(models.Model):\r\n    name = models.CharField(max_length=100)\r\n    parent = models.ForeignKey(MyMain, models.DB_CASCADE)\r\n}}}\r\n\r\n- `admin.py`\r\n\r\n{{{#!python\r\nclass ChildAdmin(admin.TabularInline):\r\n    model = MyChild\r\n    extra = 0\r\n\r\n\r\nclass MainAdmin(admin.ModelAdmin):\r\n    inlines = [ChildAdmin]\r\n\r\n\r\nadmin.site.register(MyChild)\r\nadmin.site.register(MyMain, MainAdmin)\r\n}}}\r\n\r\n`DatabaseDefault` instances are rendered as values of the parent fields:\r\n\r\n{{{\r\n<tr class=\"form-row  empty-form\" id=\"mychild_set-empty\">\r\n  <td class=\"original\">      \r\n     <input type=\"hidden\" name=\"mychild_set-__prefix__-id\" id=\"id_mychild_set-__prefix__-id\">\r\n     <input type=\"hidden\" name=\"mychild_set-__prefix__-parent\" value=\"&lt;django.db.models.expressions.DatabaseDefault object at 0x750a2aa14ad0&gt;\" id=\"id_mychild_set-__prefix__-parent\">\r\n  </td>\r\n  ...\r\n}}}\r\nwhich causes the following error when trying to save:\r\n{{{\r\n[{'parent': ['The inline value did not match the parent instance.']}]\r\n}}}",
+    "all_files": [
+      "django/forms/widgets.py",
+      "tests/forms_tests/widget_tests/test_widget.py"
+    ],
+    "subsystem_files": [
+      "django/forms/widgets.py"
+    ]
+  }
+]

@@ -1,0 +1,148 @@
+{
+  "cluster_name": "django__forms",
+  "repo": "django/django",
+  "sequence_length": 5,
+  "time_span_days": 103,
+  "mean_forward_overlap": 0.5833333333333334,
+  "tasks": [
+    {
+      "pr_number": 16666,
+      "title": "Fixed #34077 -- Added form field rendering.",
+      "merged_at": "2023-03-24T11:43:20Z",
+      "merge_commit_sha": "cad376f844c7bdeeee7607a7c0ea8ae52061309b",
+      "linked_ticket": 34077,
+      "trac_summary": "Make BoundField renderable.",
+      "problem_statement": "Ticket #34077: Make BoundField renderable.\n\nAs of Django 4.1 Forms and Widgets (i.e. its `<input>`) are renderable using the template engine. Django also has a strong concept of a field with the `BoundField` class. This contains all of the information required to render a field such as its label, errors, help text and its Widget. \r\n\r\nCurrently something like this is possible:\r\n\r\n{{{\r\n{% for field in form %}\r\n  {{ field.label_tag }}\r\n  {{ field }} # Note this is the widget!\r\n  {{ field.help_text }}\r\n{% endfor %}\r\n}}}\r\n\r\nThe current limitation is that each component of each field needs to be rendered individually. It's fine when they are rendered all in the same way as we can put them in a nice loop like above.\r\n\r\nHowever, a reasonable request could be to have the `first name` and `last name` on the same row (say). This would result in needing to do something like the following. This would become even more verbose with errors being introduced too:\r\n\r\n{{{\r\n<div class=\"row\">\r\n   <div class=\"col\"> \r\n     {{ form.first_name.label }}\r\n     {{ form.first_name }}\r\n     {{ form.first_name.help_text }}\r\n  </div>\r\n  <div class=\"col\">\r\n     {{ form.last_name.label }}\r\n     {{ form.last_name }}\r\n     {{ form.last_name.help_text }}\r\n   </div>\r\n</div>\r\n<div>\r\n   # more fields here\r\n</div>\r\n}}}\r\n\r\nThe proposal is that the `BoundField` should be a renderable object, this could either be done by a new method (e.g. `field.as_field`) or maybe a template filter (e.g `field|as_field`). We need the `as_field` (or another function name) as the field on it's own currently renders the fields widget rather than the whole field (i.e. incl label, help text , errors). \r\n\r\nThis would allow the above to be written as:\r\n\r\n{{{\r\n<div class=\"row\">\r\n   <div class=\"col\"> \r\n     {{ form.first_name|as_field }}\r\n  </div>\r\n  <div class=\"col\">\r\n     {{ form.last_name|as_field }}\r\n   </div>\r\n</div>\r\n<div>\r\n   # more fields here\r\n</div>\r\n}}}\r\n\r\nA few initial thoughts on a possible implementation approach. This is not fully thought out, but should hopefully be a helpful rough guide. \r\n\r\n1. [https://github.com/django/django/blob/main/django/forms/fields.py#L82 Field] would learn a `template_name` attribute which can also be set via it's `__init__`. Therefore in a form you would have:\r\n\r\n{{{\r\nclass MyForm(forms.Form)\r\n    first_name = forms.CharField(max=10, template_name=\"my_template_name.html\")\r\n}}}\r\n\r\n2. Add a new method, either as a filter or as a new method to [https://github.com/django/django/blob/d795259ea96004df0a2469246229a146307bcd2c/django/forms/boundfield.py#L14 BoundField] which renders the `BoundField` with it's fields template (`boundfield.field.template_name`)\r\n\r\n3. Consider if we need to provide a default implementation of this. If so we should replicate the `div.html` templates. Specifically [https://github.com/django/django/blob/d795259ea96004df0a2469246229a146307bcd2c/django/forms/templates/django/forms/div.html#L5-L21 these lines]. The `div.html` template can be updated to use this new method. \r\n\r\n4. If we do step 3 then the errors will likely be an issue as they currently get rendered to a str in the form's [https://github.com/django/django/blob/d795259ea96004df0a2469246229a146307bcd2c/django/forms/forms.py#L328-L348 get_context]. This may need breaking out into a separate function so it can be called when rendering a field. `BoundField` know's about it's associated form (`BoundField.Form`)",
+      "all_files": [
+        "django/forms/boundfield.py",
+        "django/forms/fields.py",
+        "django/forms/jinja2/django/forms/div.html",
+        "django/forms/jinja2/django/forms/field.html",
+        "django/forms/renderers.py",
+        "django/forms/templates/django/forms/div.html",
+        "django/forms/templates/django/forms/field.html",
+        "django/forms/utils.py",
+        "docs/ref/forms/api.txt",
+        "docs/ref/forms/fields.txt",
+        "docs/ref/forms/renderers.txt",
+        "docs/releases/5.0.txt",
+        "docs/topics/forms/index.txt",
+        "tests/forms_tests/templates/forms_tests/custom_field.html",
+        "tests/forms_tests/tests/test_forms.py",
+        "tests/forms_tests/tests/test_utils.py"
+      ],
+      "subsystem_files": [
+        "django/forms/boundfield.py",
+        "django/forms/fields.py",
+        "django/forms/jinja2/django/forms/div.html",
+        "django/forms/jinja2/django/forms/field.html",
+        "django/forms/renderers.py",
+        "django/forms/templates/django/forms/div.html",
+        "django/forms/templates/django/forms/field.html",
+        "django/forms/utils.py"
+      ]
+    },
+    {
+      "pr_number": 16785,
+      "title": "Fixed #34488 -- Made ClearableFileInput preserve \"Clear\" checked attribute when form is invalid.",
+      "merged_at": "2023-04-21T06:38:43Z",
+      "merge_commit_sha": "8a6c0203c4e92908c2b26ba54feba4ce7e76d081",
+      "linked_ticket": 34488,
+      "trac_summary": "ClearableFileInput widget forgets \"Clear\" selection when form is not valid",
+      "problem_statement": "Ticket #34488: ClearableFileInput widget forgets \"Clear\" selection when form is not valid\n\nClearableFileInput widget forgets \"Clear\" selection when form is not valid, that causes file would not be deleted once when form is valid again. This can be inconvinient, especially for forms with many fields.\r\n\r\nTo reproduce:\r\n\r\n1. Choose admin for any model instance where attachment is not required and has some validation,\r\n2. check \"Clear\" next to the attachment, and change the form, so validation would fail,\r\n3. Save form, validation error would occur, attachment and \"Clear\" would be empty\r\n4. make form valid again and Save, attachment woult not be cleared\r\n\r\n(I am attaching  example screenshots)\r\n\r\n[[https://code.djangoproject.com/attachment/ticket/34488/clearable-file-input-before.png]]\r\n\r\n[[https://code.djangoproject.com/attachment/ticket/34488/clearable-file-input-validation-error.png]]\r\n\r\n[[https://code.djangoproject.com/attachment/ticket/34488/clearable-file-input-validation-success.png]]",
+      "all_files": [
+        "django/contrib/admin/templates/admin/widgets/clearable_file_input.html",
+        "django/forms/widgets.py",
+        "tests/admin_widgets/tests.py",
+        "tests/forms_tests/widget_tests/test_clearablefileinput.py"
+      ],
+      "subsystem_files": [
+        "django/forms/widgets.py"
+      ]
+    },
+    {
+      "pr_number": 16614,
+      "title": "Fixed #34380 -- Allowed specifying a default URL scheme in forms.URLField.",
+      "merged_at": "2023-04-28T05:35:01Z",
+      "merge_commit_sha": "7bbbadc69383f0a2b99253e153b974f8783e876d",
+      "linked_ticket": 34380,
+      "trac_summary": "Make URLField assume \"https\".",
+      "problem_statement": "Ticket #34380: Make URLField assume \"https\".\n\nIn `django.forms.fields.URLField.to_python` the assumption is made that the `http` (no S) is a good default scheme for URLs that do not specify a scheme when submitted.\r\n\r\nEntering `example.com` in a URLField will give `http://example.com` as cleaned data.\r\n\r\nRef: https://github.com/django/django/blame/main/django/forms/fields.py#L772-L774\r\n\r\nI think URLField should assume the safe option `https`.\r\n\r\nI've notified the security team, and they didn't see this as a security issue.",
+      "all_files": [
+        "django/forms/fields.py",
+        "docs/internals/deprecation.txt",
+        "docs/ref/forms/fields.txt",
+        "docs/releases/5.0.txt",
+        "tests/admin_views/tests.py",
+        "tests/admin_widgets/tests.py",
+        "tests/forms_tests/field_tests/test_urlfield.py",
+        "tests/forms_tests/tests/test_error_messages.py",
+        "tests/generic_inline_admin/tests.py",
+        "tests/model_forms/tests.py"
+      ],
+      "subsystem_files": [
+        "django/forms/fields.py"
+      ]
+    },
+    {
+      "pr_number": 16745,
+      "title": "Fixed #34473 -- Fixed step validation for form fields with non-zero minimum value.",
+      "merged_at": "2023-06-16T10:20:12Z",
+      "merge_commit_sha": "1fe0b167af3611cca79e8a8092ee929312193c6f",
+      "linked_ticket": 34473,
+      "trac_summary": "StepValueValidator does not take into account min_value",
+      "problem_statement": "Ticket #34473: StepValueValidator does not take into account min_value\n\nIf you define a number input with `<input type=\"number\" min=1 step=2>`, client side this will only allow positive odd numbers. \r\n\r\nWe could generate the same input in a Django form with `IntegerField(min_value=1, step_size=2)` and `Field.localize` is `False`, which would then use `MinValueValidator` and `StepValueValidator`.\r\n\r\nWe then get into a problem as `StepValueValidator` always uses `0` as the base, so `step_size=2` only even numbers are allowed. This then conflicts with the client side validation, and the user cannot submit any value for the input.\r\n\r\nI'm unsure if this is a bug or whether this is just a configuration problem, apologies if so, but the behaviour does seem to me to conflict with how min and step is handled by browsers.",
+      "all_files": [
+        "django/core/validators.py",
+        "django/forms/fields.py",
+        "docs/ref/forms/fields.txt",
+        "docs/ref/validators.txt",
+        "docs/releases/5.0.txt",
+        "tests/forms_tests/field_tests/test_decimalfield.py",
+        "tests/forms_tests/field_tests/test_floatfield.py",
+        "tests/forms_tests/field_tests/test_integerfield.py",
+        "tests/validators/tests.py"
+      ],
+      "subsystem_files": [
+        "django/forms/fields.py"
+      ]
+    },
+    {
+      "pr_number": 16920,
+      "title": "Fixed #32819 -- Established relationship between form fields and their help text.",
+      "merged_at": "2023-07-06T06:56:01Z",
+      "merge_commit_sha": "966ecdd482167f3f6b08b00f484936c837751cb9",
+      "linked_ticket": 32819,
+      "trac_summary": "Fields\u2019 help text and errors should be associated with input",
+      "problem_statement": "Ticket #32819: Fields\u2019 help text and errors should be associated with input\n\nWith Django\u2019s default field rendering, all field errors are rendered as a list above the field\u2019s label, and help text is rendered after the field\u2019s form element. Example with `as_p`:\r\n\r\n{{{\r\n<ul class=\"errorlist\">\r\n  <li>This field is required.</li>\r\n</ul>\r\n<p>\r\n  <label for=\"id_duration_required\">Duration required:</label>\r\n  <input type=\"text\" name=\"duration_required\" required=\"\" id=\"id_duration_required\">\r\n  <span class=\"helptext\">Help</span>\r\n</p>\r\n}}}\r\n\r\nOne problem for screen reader users is that the association between the errors and the field, and between the help text and the field, is only communicated visually. This is a failure of either WCAG 2.1 level A [https://www.w3.org/WAI/WCAG21/Understanding/info-and-relationships.html SC 1.3.1: Info and Relationships], or [https://www.w3.org/WAI/WCAG21/Understanding/labels-or-instructions SC 3.3.2: Labels or Instructions]. More importantly, it just makes it harder than necessary for screen reader users to make use of help text, and to identify error messages.\r\n\r\nThe fix is relatively straightforward \u2013 using `aria-describedby`, as documented in the (non-normative) [https://www.w3.org/WAI/WCAG21/Techniques/aria/ARIA1.html ARIA1 Using the aria-describedby property to provide a descriptive label for user interface controls] technique. Here is another well-known accessibility-oriented UI library that implements this technique: [https://design-system.service.gov.uk/components/text-input/#error-messages GOV.UK design system \u2013 text input with error message].\r\n\r\nHere is what implementing `aria-describedby` would look like in the same example as above:\r\n\r\n{{{\r\n<div class=\"errorlist\" id=\"id_duration_required_errorlist\">\r\n  <p>This field is required.</p>\r\n</div>\r\n<p>\r\n  <label for=\"id_duration_required\">Duration required:</label>\r\n  <input type=\"text\" name=\"duration_required\" required=\"\" id=\"id_duration_required\" aria-describedby=\"id_duration_required_errorlist id_duration_required_helptext\">\r\n  <span class=\"helptext\" id=\"id_duration_required_helptext\">Help</span>\r\n</p>\r\n}}}\r\n\r\nWe have additional `id` attributes, `aria-describedby`, and `errorlist` is no longer a `<ul>`. Result in VoiceOver:\r\n\r\n[[Image(https://code.djangoproject.com/raw-attachment/ticket/32819/email-required-ariadescribedby.gif)]]\r\n\r\nUnfortunately I tried to have this with the `errorlist` kept as a `ul`, but it wasn\u2019t announced by VoiceOver. I haven\u2019t heard of this limitation before so am not sure why that might be the case \u2013\u00a0I\u2019d appreciate others taking a look if possible.",
+      "all_files": [
+        "django/forms/boundfield.py",
+        "django/forms/jinja2/django/forms/field.html",
+        "django/forms/jinja2/django/forms/p.html",
+        "django/forms/jinja2/django/forms/table.html",
+        "django/forms/jinja2/django/forms/ul.html",
+        "django/forms/templates/django/forms/field.html",
+        "django/forms/templates/django/forms/p.html",
+        "django/forms/templates/django/forms/table.html",
+        "django/forms/templates/django/forms/ul.html",
+        "docs/ref/forms/fields.txt",
+        "docs/releases/5.0.txt",
+        "docs/topics/forms/index.txt",
+        "tests/admin_inlines/tests.py",
+        "tests/forms_tests/tests/test_forms.py",
+        "tests/model_forms/tests.py"
+      ],
+      "subsystem_files": [
+        "django/forms/boundfield.py",
+        "django/forms/jinja2/django/forms/field.html",
+        "django/forms/jinja2/django/forms/p.html",
+        "django/forms/jinja2/django/forms/table.html",
+        "django/forms/jinja2/django/forms/ul.html",
+        "django/forms/templates/django/forms/field.html",
+        "django/forms/templates/django/forms/p.html",
+        "django/forms/templates/django/forms/table.html",
+        "django/forms/templates/django/forms/ul.html"
+      ]
+    }
+  ]
+}

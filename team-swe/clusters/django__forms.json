@@ -1,0 +1,11 @@
+{
+  "cluster_name": "django__forms",
+  "repo": "django/django",
+  "instance_ids": [
+    "django__django-16666",
+    "django__django-16785",
+    "django__django-16614",
+    "django__django-16745",
+    "django__django-16920"
+  ]
+}
