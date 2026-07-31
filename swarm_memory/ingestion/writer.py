@@ -279,7 +279,11 @@ class FactWriter:
 
                 content = json.dumps(step)
                 try:
-                    vec_bytes = self.embedder.embed(content)
+                    # Truncate to ~32k chars before embedding to prevent massive memory
+                    # spikes in the tokenizer during long tool outputs (e.g. 5MB test logs).
+                    # The embedder truncates to 8192 tokens anyway, so this preserves semantics.
+                    embed_content = content[:32000]
+                    vec_bytes = self.embedder.embed(embed_content)
                     traj_id = str(uuid7())
 
                     self.db.execute("BEGIN")
