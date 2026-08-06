@@ -97,7 +97,7 @@ async def test_generate_json_temperature_zero(mock_acompletion):
 
     mock_acompletion.assert_called_once()
     assert mock_acompletion.call_args.kwargs["temperature"] == 0.0
-    assert mock_acompletion.call_args.kwargs["max_tokens"] == 200
+    assert mock_acompletion.call_args.kwargs["max_tokens"] == 4000
 
 
 @pytest.mark.asyncio

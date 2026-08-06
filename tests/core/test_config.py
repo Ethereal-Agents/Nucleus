@@ -32,7 +32,7 @@ def test_default_values():
         assert config.CONFIDENCE_DECAY_RATE == 0.01
         assert config.CONFIDENCE_DECAY_FLOOR == 0.5
         assert config.SESSION_TTL_SECONDS == 7200
-        assert config.LLM_MODEL == "openrouter/xiaomi/mimo-v2.5-pro"
+        assert config.LLM_MODEL == "openrouter/deepseek/deepseek-v4-flash-0731"
 
 
 def test_db_path_from_env():

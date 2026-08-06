@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
 from swarm_memory.core.embeddings import EmbeddingModel
@@ -22,8 +23,8 @@ def mock_embedder():
     """Provides a mocked embedder for fast unit tests without loading the model."""
     embedder = MagicMock()
     # Mock embed to return a fake embedding of length 768 float32s
-    embedder.embed.return_value = b"\x00" * (768 * 4)
-    embedder.embed_query.return_value = b"\x00" * (768 * 4)
+    embedder.embed.return_value = np.ones(768, dtype=np.float32).tobytes()
+    embedder.embed_query.return_value = np.ones(768, dtype=np.float32).tobytes()
     return embedder
 
 

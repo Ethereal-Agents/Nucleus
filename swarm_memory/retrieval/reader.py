@@ -258,6 +258,7 @@ class FactReader:
         top_n: int = 20,
         as_of: str | None = None,
         fact_type: str | None = None,
+        max_distance: float | None = None,
     ) -> list[tuple[str, float]]:
         """
         KNN vector search via sqlite-vec.
@@ -270,10 +271,24 @@ class FactReader:
             scope_tiers: Output of resolve_scope_tiers(scope). Can be empty for global search.
             top_n:       Number of candidates to return (over-fetch for RRF).
             as_of:       ISO timestamp for time-travel.
+            max_distance: L2 distance ceiling. Pass None (default) to read
+                          config.RETRIEVAL_MAX_DISTANCE at call time, which respects
+                          runtime overrides (e.g. in tests). Pass an explicit float to
+                          override. We post-filter in Python rather than push a distance
+                          predicate into the SQL because sqlite-vec's k-constrained KNN
+                          does not support mixing a k= bound with a WHERE distance clause
+                          across all versions.
 
         Returns:
-            [(fact_id, distance), ...] sorted ascending by distance (lower = closer).
+            [(fact_id, distance), ...] sorted ascending by distance (lower = closer),
+            containing only facts within the effective max_distance of the query.
         """
+        # Read the configured max distance at call time so runtime config overrides
+        # (e.g. in tests) are respected. Callers can pass an explicit value to override.
+        effective_max_distance = (
+            max_distance if max_distance is not None else config.RETRIEVAL_MAX_DISTANCE
+        )
+
         if not self._vec_available:
             return []
 
@@ -320,8 +335,12 @@ class FactReader:
                     [query_vec, top_n, *time_params],
                 ).fetchall()
 
-        # Lower distance = more similar; convert to (id, score) keeping distance
-        return [(row["fact_id"], row["distance"]) for row in rows]
+        # Lower distance = more similar; convert to (id, score) keeping distance.
+        # Apply the similarity gate: discard results whose L2 distance exceeds the
+        # configured threshold (i.e. cosine similarity < RETRIEVAL_MIN_SIMILARITY).
+        results = [(row["fact_id"], row["distance"]) for row in rows]
+        results = [(fid, d) for fid, d in results if d <= effective_max_distance]
+        return results
 
     def _bm25_search(
         self,
@@ -329,6 +348,9 @@ class FactReader:
         scope_tiers: list[tuple[str, int]],
         top_n: int = 20,
         as_of: str | None = None,
+        query_vec: bytes | None = None,
+        max_distance: float | None = None,
+        fact_type: FactType | str | None = None,
     ) -> list[tuple[str, float]]:
         """
         BM25 keyword search via FTS5.
@@ -352,6 +374,18 @@ class FactReader:
             time_filter = "AND f.valid_to IS NULL"
             time_params = []
 
+        if fact_type:
+            time_filter += " AND f.fact_type = ?"
+            time_params.append(fact_type)
+
+        join_vec = ""
+        vec_filter = ""
+        vec_params = []
+        if query_vec and max_distance is not None:
+            join_vec = "JOIN facts_vec fv ON fv.fact_id = f.id"
+            vec_filter = "AND vec_distance_L2(fv.embedding, ?) <= ?"
+            vec_params = [query_vec, max_distance]
+
         with timed("bm25_search"):
             if scope_tiers:
                 scope_paths = [s for s, _ in scope_tiers]
@@ -362,13 +396,15 @@ class FactReader:
                     SELECT ff.fact_id, bm25(facts_fts) AS score
                     FROM facts_fts ff
                     JOIN facts f ON ff.fact_id = f.id
+                    {join_vec}
                     WHERE facts_fts MATCH ?
                       AND (f.scope IN ({placeholders}) OR f.scope LIKE ?)
                       {time_filter}
+                      {vec_filter}
                     ORDER BY score          -- bm25() is negative; higher (less negative) = better
                     LIMIT ?
                     """,
-                    [fts_expr, *scope_paths, base_scope + "/%", *time_params, top_n],
+                    [fts_expr, *scope_paths, base_scope + "/%", *time_params, *vec_params, top_n],
                 ).fetchall()
             else:
                 rows = self._conn.execute(
@@ -376,12 +412,14 @@ class FactReader:
                     SELECT ff.fact_id, bm25(facts_fts) AS score
                     FROM facts_fts ff
                     JOIN facts f ON ff.fact_id = f.id
+                    {join_vec}
                     WHERE facts_fts MATCH ?
                       {time_filter}
+                      {vec_filter}
                     ORDER BY score          -- bm25() is negative; higher (less negative) = better
                     LIMIT ?
                     """,
-                    [fts_expr, *time_params, top_n],
+                    [fts_expr, *time_params, *vec_params, top_n],
                 ).fetchall()
 
         return [(row["fact_id"], row["score"]) for row in rows]
@@ -576,18 +614,38 @@ class FactReader:
         # Step 1: Resolve scope hierarchy
         scope_tiers = resolve_scope_tiers(scope) if scope else []
 
-        # Step 2 + 3: Dense search (always runs when vec is available)
+        # Step 2 + 3: Dense search (always runs when vec is available).
+        # _dense_search already applies the RETRIEVAL_MIN_SIMILARITY gate, so
+        # dense_results contains only facts with cosine similarity >= threshold.
         with timed("search.dense"):
             query_vec = self._embedder.embed_query(query)
             dense_results = self._dense_search(
                 query_vec, scope_tiers, top_n=OVER_FETCH, as_of=as_of, fact_type=fact_type
             )
 
+        # Capture the gate-passing IDs from dense search for logging
+        dense_passing_ids: set[str] = {fid for fid, _ in dense_results}
+        logger.debug(
+            "Similarity gate (min=%.2f, max_dist=%.4f): %d dense candidates → %d passed",
+            config.RETRIEVAL_MIN_SIMILARITY,
+            config.RETRIEVAL_MAX_DISTANCE,
+            OVER_FETCH,  # approximate — we don't know how many sqlite-vec returned pre-filter
+            len(dense_results),
+        )
+
         # Step 4 + 5: BM25 search (skipped if query is too vague)
         fts_expr = preprocess_for_fts5(query)
         bm25_results: list[tuple[str, float]] = []
         if fts_expr:
-            bm25_results = self._bm25_search(fts_expr, scope_tiers, top_n=OVER_FETCH, as_of=as_of)
+            bm25_results = self._bm25_search(
+                fts_expr,
+                scope_tiers,
+                top_n=OVER_FETCH,
+                as_of=as_of,
+                query_vec=query_vec if self._vec_available else None,
+                max_distance=config.RETRIEVAL_MAX_DISTANCE if self._vec_available else None,
+                fact_type=fact_type,
+            )
         else:
             logger.debug("Query '%s' is all stop words — using dense-only retrieval", query)
 
@@ -604,7 +662,7 @@ class FactReader:
             elif bm25_results:
                 fused = [(fid, score) for fid, score in bm25_results]
             else:
-                return []  # nothing found
+                return []  # nothing passed the similarity gate
 
         # Build a score lookup for decay calculation later
         rrf_scores = dict(fused)

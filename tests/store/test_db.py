@@ -135,7 +135,7 @@ def test_insert_and_retrieve_fact(db_conn):
     cursor.execute(
         """
         SELECT * FROM facts
-        WHERE scope = ? AND valid_to IS NULL AND superseded_by IS NULL
+        WHERE scope = ? AND valid_to IS NULL
     """,
         (fact.scope,),
     )
@@ -165,7 +165,6 @@ def test_all_five_indexes_created(db_conn):
     expected = {
         "idx_facts_current",
         "idx_facts_valid_range",
-        "idx_facts_superseded_by",
         "idx_facts_source_run",
         "idx_facts_type",
     }
@@ -238,14 +237,14 @@ def test_current_facts_query_excludes_superseded(db_mem):
 
     # Supersede old-fact
     db_mem.execute(
-        "UPDATE facts SET valid_to = ?, superseded_by = 'new-fact' WHERE id = 'old-fact'",
+        "UPDATE facts SET valid_to = ? WHERE id = 'old-fact'",
         (now.isoformat(),),
     )
     db_mem.commit()
 
     rows = db_mem.execute(
         """SELECT id FROM facts
-           WHERE scope = 'repo/auth' AND valid_to IS NULL AND superseded_by IS NULL""",
+           WHERE scope = 'repo/auth' AND valid_to IS NULL""",
     ).fetchall()
 
     ids = [r["id"] for r in rows]
@@ -268,7 +267,7 @@ def test_point_in_time_as_of_query(db_mem):
     # Insert new fact valid from t1 first (to satisfy FK)
     _insert_fact(db_mem, "fact-sessions", "auth uses sessions", "repo/auth", run_id, valid_from=t1)
     db_mem.execute(
-        "UPDATE facts SET valid_to = ?, superseded_by = 'fact-sessions' WHERE id = 'fact-jwt'",
+        "UPDATE facts SET valid_to = ? WHERE id = 'fact-jwt'",
         (t1.isoformat(),),
     )
     db_mem.commit()
@@ -303,7 +302,7 @@ def test_point_in_time_as_of_query(db_mem):
 def test_supersession_update_query(db_mem):
     """
     §2.3 'WRITE: Supersede an old fact' — verifies that UPDATE sets valid_to and
-    superseded_by, and that the old fact row is preserved (never deleted — §10.1).
+    and that the old fact row is preserved (never deleted — §10.1).
     """
     run_id = _insert_run(db_mem)
     past = datetime.now(UTC) - timedelta(hours=1)
@@ -314,7 +313,7 @@ def test_supersession_update_query(db_mem):
 
     # Apply supersession UPDATE (§2.3 pattern)
     db_mem.execute(
-        "UPDATE facts SET valid_to = ?, superseded_by = 'new' WHERE id = 'old'",
+        "UPDATE facts SET valid_to = ? WHERE id = 'old'",
         (now.isoformat(),),
     )
     db_mem.commit()
@@ -325,13 +324,10 @@ def test_supersession_update_query(db_mem):
     assert old_row is not None, "Superseded fact must NOT be deleted"
     # valid_to must be set
     assert old_row["valid_to"] is not None, "valid_to must be set on superseded fact"
-    # superseded_by FK must point to new fact
-    assert old_row["superseded_by"] == "new", "superseded_by must point to the replacement fact"
 
     # New fact must still be current
     new_row = db_mem.execute("SELECT * FROM facts WHERE id = 'new'").fetchone()
     assert new_row["valid_to"] is None
-    assert new_row["superseded_by"] is None
 
 
 def test_get_db_creates_file(tmp_path):

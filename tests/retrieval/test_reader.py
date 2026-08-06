@@ -18,12 +18,10 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from swarm_memory.core.embeddings import EmbeddingModel
 from swarm_memory.core.models import Fact, FactType, SearchResult
 from swarm_memory.retrieval.reader import (
     FactReader,
@@ -48,20 +46,6 @@ def in_memory_db() -> sqlite3.Connection:
     conn = get_initialized_db(":memory:")
     yield conn
     conn.close()
-
-
-@pytest.fixture
-def mock_embedder() -> EmbeddingModel:
-    """
-    EmbeddingModel with sentence-transformers mocked out.
-    Returns deterministic 768-dim float32 vectors without downloading the model.
-    """
-    embedder = EmbeddingModel(model_name="mock-model", dim=768)
-    # Inject a mock model that returns deterministic vectors
-    mock_model = MagicMock()
-    mock_model.encode = lambda text, **_kwargs: np.ones(768, dtype=np.float32)
-    embedder._model = mock_model
-    return embedder
 
 
 @pytest.fixture
@@ -149,7 +133,7 @@ def db_with_facts(in_memory_db) -> tuple[sqlite3.Connection, dict]:
 
     # Supersede fact-E
     conn.execute(
-        "UPDATE facts SET valid_to = ?, superseded_by = 'fact-C' WHERE id = 'fact-E'",
+        "UPDATE facts SET valid_to = ? WHERE id = 'fact-E'",
         (now.isoformat(),),
     )
 
@@ -460,7 +444,6 @@ class TestFactReaderDense:
             "('fact-dense-2', 'dense content 2', 'insight', 'dense-scope', 1.0, ?, 'run_1')",
             (now.isoformat(), now.isoformat()),
         )
-        import numpy as np
 
         emb = np.ones(768, dtype=np.float32).tobytes()
         db_with_vec.execute(
@@ -472,8 +455,8 @@ class TestFactReaderDense:
 
         # Superseded fact
         db_with_vec.execute(
-            "INSERT INTO facts (id, content, fact_type, scope, confidence, valid_from, valid_to, superseded_by, source_run_id) VALUES "
-            "('fact-super', 'super content', 'insight', 'dense-scope', 1.0, ?, ?, 'fact-dense-1', 'run_1')",
+            "INSERT INTO facts (id, content, fact_type, scope, confidence, valid_from, valid_to, source_run_id) VALUES "
+            "('fact-super', 'super content', 'insight', 'dense-scope', 1.0, ?, ?, 'run_1')",
             (past.isoformat(), now.isoformat()),
         )
         db_with_vec.execute(
@@ -543,17 +526,18 @@ class TestSearchTrajectories:
             "('traj-3', 'trajectory three content', 'run_1', ?)",
             (now, now, now),
         )
-        import numpy as np
 
-        emb = np.ones(768, dtype=np.float32).tobytes()
         db_with_vec.execute(
-            "INSERT INTO trajectories_vec (trajectory_id, embedding) VALUES (?, ?)", ("traj-1", emb)
+            "INSERT INTO trajectories_vec (trajectory_id, embedding) VALUES (?, ?)",
+            ("traj-1", np.ones(768, dtype=np.float32).tobytes()),
         )
         db_with_vec.execute(
-            "INSERT INTO trajectories_vec (trajectory_id, embedding) VALUES (?, ?)", ("traj-2", emb)
+            "INSERT INTO trajectories_vec (trajectory_id, embedding) VALUES (?, ?)",
+            ("traj-2", np.ones(768, dtype=np.float32).tobytes()),
         )
         db_with_vec.execute(
-            "INSERT INTO trajectories_vec (trajectory_id, embedding) VALUES (?, ?)", ("traj-3", emb)
+            "INSERT INTO trajectories_vec (trajectory_id, embedding) VALUES (?, ?)",
+            ("traj-3", np.ones(768, dtype=np.float32).tobytes()),
         )
         return db_with_vec
 
@@ -573,3 +557,117 @@ class TestSearchTrajectories:
     def test_search_trajectories_empty_db(self, traj_reader):
         res = traj_reader.search_trajectories("query", top_k=5)
         assert res == []
+
+
+@pytest.mark.usefixtures("db_with_vec")
+class TestHybridSearch:
+    @pytest.fixture
+    def hybrid_reader(self, db_with_vec, mock_embedder):
+        return FactReader(db_with_vec, mock_embedder, vec_available=True)
+
+    @pytest.fixture
+    def seeded_hybrid_db(self, db_with_vec, mock_embedder):
+        from datetime import datetime, UTC
+
+        now = datetime.now(UTC).isoformat()
+
+        # We need to insert facts into facts, facts_fts, and facts_vec
+        def insert_fact(fid, content, ftype, vec):
+            db_with_vec.execute(
+                "INSERT INTO facts (id, content, fact_type, scope, confidence, valid_from, source_run_id) VALUES "
+                "(?, ?, ?, 'test-scope', 1.0, ?, 'run_1')",
+                (fid, content, ftype, now),
+            )
+            db_with_vec.execute(
+                "INSERT INTO facts_fts (fact_id, content) VALUES (?, ?)", (fid, content)
+            )
+            db_with_vec.execute(
+                "INSERT INTO facts_vec (fact_id, embedding) VALUES (?, ?)", (fid, vec)
+            )
+
+        # 1. Fact A: Perfect keyword match, but dense embedding is very far
+        # Distance > 0.8944
+        far_vec = np.zeros(768, dtype=np.float32)
+        far_vec[0] = 5.0  # Ensure L2 distance to ones is large
+        insert_fact(
+            "fact-far", "hybrid semantic threshold keyword", "insight", far_vec.tobytes()
+        )
+
+        # 2. Fact B: Perfect keyword match, passes threshold, but ranked low in dense
+        # Make distance exactly 0.5 (passes < 0.8944)
+        close_vec = np.ones(768, dtype=np.float32)
+        close_vec[0] = 0.5
+        insert_fact(
+            "fact-close-bm25",
+            "hybrid perfect match keyword",
+            "insight",
+            close_vec.tobytes(),
+        )
+
+        # 3. Many dense facts that are even closer (distance 0.1) so fact-close-bm25 gets pushed out of top 20
+        # OVER_FETCH in _dense_search is top_k * 4. We will query top_k=2 -> OVER_FETCH=8
+        # Let's insert 10 dense facts that are extremely close
+        for i in range(10):
+            very_close_vec = np.ones(768, dtype=np.float32)
+            very_close_vec[i] = 0.9  # Very close to 1.0
+            insert_fact(
+                f"fact-dense-{i}", "unrelated content", "insight", very_close_vec.tobytes()
+            )
+
+        # 4. Fact C: Perfect keyword match, passes threshold, but wrong fact_type
+        insert_fact(
+            "fact-wrong-type", "hybrid fact type keyword", "gotcha", close_vec.tobytes()
+        )
+
+        return db_with_vec
+
+    def test_bm25_semantic_threshold_drops_far_facts(
+        self, hybrid_reader, seeded_hybrid_db
+    ):
+        # "semantic threshold keyword" is only in fact-far, which has distance > threshold
+        res = hybrid_reader.search("semantic threshold keyword", scope="test-scope", top_k=5)
+        # fact-far should be excluded because it failed the threshold, even though BM25 found it
+        fact_ids = [r.fact.id for r in res]
+        assert "fact-far" not in fact_ids
+
+    def test_bm25_preserves_thresholded_facts_outside_dense_top_n(
+        self, hybrid_reader, seeded_hybrid_db
+    ):
+        # Query: "perfect match keyword".
+        # This matches fact-close-bm25.
+        # Its distance is 0.5, so it passes the threshold.
+        # However, there are 10 facts with distance < 0.2.
+        # If we ask for top_k=2 (OVER_FETCH=8), the dense search top 8 will NOT include fact-close-bm25.
+        # But BM25 should still retrieve it because we evaluate the threshold dynamically!
+        res = hybrid_reader.search("perfect match keyword", scope="test-scope", top_k=5)
+
+        # It should be returned because it's a perfect keyword match that passes the threshold
+        fact_ids = [r.fact.id for r in res]
+        assert "fact-close-bm25" in fact_ids
+
+    def test_hybrid_fusion_combines_results(self, hybrid_reader, seeded_hybrid_db):
+        # Query "hybrid"
+        # Matches fact-far (dropped), fact-close-bm25, and fact-wrong-type via BM25
+        # The dense search will return the 10 dense facts.
+        # The results should include both dense facts and fact-close-bm25
+        res = hybrid_reader.search("hybrid", scope="test-scope", top_k=5)
+        fact_ids = [r.fact.id for r in res]
+
+        # Ensure fact-close-bm25 is included (from BM25)
+        assert "fact-close-bm25" in fact_ids
+
+        # Ensure at least some dense facts are included
+        assert any(fid.startswith("fact-dense-") for fid in fact_ids)
+
+    def test_bm25_fact_type_filter_with_vec_available(
+        self, hybrid_reader, seeded_hybrid_db
+    ):
+        # Query "fact type keyword" - matches fact-wrong-type which is a GOTCHA
+        # But we filter for INSIGHT
+        res = hybrid_reader.search(
+            "fact type keyword", scope="test-scope", top_k=5, fact_type="insight"
+        )
+
+        # fact-wrong-type should be filtered by fact_type natively in BM25 query
+        fact_ids = [r.fact.id for r in res]
+        assert "fact-wrong-type" not in fact_ids

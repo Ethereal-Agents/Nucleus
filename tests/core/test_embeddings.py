@@ -10,10 +10,10 @@ from swarm_memory.core.embeddings import PREFIX_DOCUMENT, PREFIX_QUERY, Embeddin
 def mock_embedder() -> EmbeddingModel:
     embedder = EmbeddingModel(model_name="mock-model", dim=768)
     mock_model = MagicMock()
-    
+
     def fake_embed(*args, **kwargs):
         yield np.ones(768, dtype=np.float32)
-        
+
     mock_model.embed = fake_embed
     embedder._model = mock_model
     return embedder
@@ -61,10 +61,10 @@ class TestEmbeddingModel:
         """Output should be truncated to configured dim even if model outputs more."""
         embedder = EmbeddingModel(dim=256)
         mock_model = MagicMock()
-        
+
         def fake_embed(*args, **kw):
             yield np.ones(768, dtype=np.float32)
-            
+
         mock_model.embed = fake_embed
         embedder._model = mock_model
 
@@ -74,11 +74,11 @@ class TestEmbeddingModel:
     def test_embed_batch_returns_correct_count(self, mock_embedder):
         """embed_batch() should return one bytes object per input text."""
         texts = ["fact one", "fact two", "fact three"]
-        
+
         def fake_embed(texts_list, **kw):
             for _ in texts_list:
                 yield np.ones(768, dtype=np.float32)
-                
+
         mock_embedder._model.embed = fake_embed
         results = mock_embedder.embed_batch(texts)
         assert len(results) == 3

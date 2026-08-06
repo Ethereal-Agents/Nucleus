@@ -146,7 +146,7 @@ class EmbeddingModel:
 
         model = self._load_model()
         prefixed = [prefix + t for t in texts]
-        
+
         # fastembed handles batching natively
         vec_generator = model.embed(prefixed, batch_size=32)
         return [self._to_bytes(vec) for vec in vec_generator]

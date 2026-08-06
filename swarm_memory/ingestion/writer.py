@@ -210,6 +210,14 @@ class FactWriter:
                     new_id = str(uuid7())
                     split_hash = hashlib.sha256(f"{split_content}|{scope}".encode()).hexdigest()
 
+                    # Prevent UNIQUE constraint failure if LLM rewriting yields an existing fact
+                    existing = self.db.execute(
+                        "SELECT id FROM facts WHERE content_hash = ?", [split_hash]
+                    ).fetchone()
+                    if existing:
+                        new_ids.append(existing["id"])
+                        continue
+
                     self.db.execute(
                         """INSERT INTO facts
                            (id, content, fact_type, scope, confidence, valid_from, source_run_id, content_hash)
