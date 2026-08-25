@@ -623,8 +623,6 @@ class FactReader:
                 query_vec, scope_tiers, top_n=OVER_FETCH, as_of=as_of, fact_type=fact_type
             )
 
-        # Capture the gate-passing IDs from dense search for logging
-        dense_passing_ids: set[str] = {fid for fid, _ in dense_results}
         logger.debug(
             "Similarity gate (min=%.2f, max_dist=%.4f): %d dense candidates → %d passed",
             config.RETRIEVAL_MIN_SIMILARITY,

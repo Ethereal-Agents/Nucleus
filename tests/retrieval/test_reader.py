@@ -567,7 +567,7 @@ class TestHybridSearch:
 
     @pytest.fixture
     def seeded_hybrid_db(self, db_with_vec, mock_embedder):
-        from datetime import datetime, UTC
+        from datetime import UTC, datetime
 
         now = datetime.now(UTC).isoformat()
 
@@ -589,9 +589,7 @@ class TestHybridSearch:
         # Distance > 0.8944
         far_vec = np.zeros(768, dtype=np.float32)
         far_vec[0] = 5.0  # Ensure L2 distance to ones is large
-        insert_fact(
-            "fact-far", "hybrid semantic threshold keyword", "insight", far_vec.tobytes()
-        )
+        insert_fact("fact-far", "hybrid semantic threshold keyword", "insight", far_vec.tobytes())
 
         # 2. Fact B: Perfect keyword match, passes threshold, but ranked low in dense
         # Make distance exactly 0.5 (passes < 0.8944)
@@ -610,20 +608,14 @@ class TestHybridSearch:
         for i in range(10):
             very_close_vec = np.ones(768, dtype=np.float32)
             very_close_vec[i] = 0.9  # Very close to 1.0
-            insert_fact(
-                f"fact-dense-{i}", "unrelated content", "insight", very_close_vec.tobytes()
-            )
+            insert_fact(f"fact-dense-{i}", "unrelated content", "insight", very_close_vec.tobytes())
 
         # 4. Fact C: Perfect keyword match, passes threshold, but wrong fact_type
-        insert_fact(
-            "fact-wrong-type", "hybrid fact type keyword", "gotcha", close_vec.tobytes()
-        )
+        insert_fact("fact-wrong-type", "hybrid fact type keyword", "gotcha", close_vec.tobytes())
 
         return db_with_vec
 
-    def test_bm25_semantic_threshold_drops_far_facts(
-        self, hybrid_reader, seeded_hybrid_db
-    ):
+    def test_bm25_semantic_threshold_drops_far_facts(self, hybrid_reader, seeded_hybrid_db):
         # "semantic threshold keyword" is only in fact-far, which has distance > threshold
         res = hybrid_reader.search("semantic threshold keyword", scope="test-scope", top_k=5)
         # fact-far should be excluded because it failed the threshold, even though BM25 found it
@@ -659,9 +651,7 @@ class TestHybridSearch:
         # Ensure at least some dense facts are included
         assert any(fid.startswith("fact-dense-") for fid in fact_ids)
 
-    def test_bm25_fact_type_filter_with_vec_available(
-        self, hybrid_reader, seeded_hybrid_db
-    ):
+    def test_bm25_fact_type_filter_with_vec_available(self, hybrid_reader, seeded_hybrid_db):
         # Query "fact type keyword" - matches fact-wrong-type which is a GOTCHA
         # But we filter for INSIGHT
         res = hybrid_reader.search(
