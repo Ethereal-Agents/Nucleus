@@ -46,15 +46,19 @@ class LLMService:
                         {"role": "user", "content": user_prompt},
                     ],
                     response_format={"type": "json_object"},
-                    max_tokens=200,
+                    max_tokens=4000,
                     temperature=0.0,
                 )
 
-                content = response.choices[0].message.content
+                content = response.choices[0].message.content or ""
                 logger.debug(f"LLM Raw Response: {content}")
 
                 # Clean markdown formatting if model didn't strictly follow JSON mode
                 text = content.strip()
+                if not text:
+                    logger.error("LLM returned an empty response. Cannot parse JSON.")
+                    return None
+
                 if text.startswith("```"):
                     text = re.sub(r"^```(?:json)?\s*", "", text)
                     text = re.sub(r"\s*```$", "", text.strip())
@@ -63,7 +67,7 @@ class LLMService:
 
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse LLM JSON output: {e} | Content: {content}")
-                return {}
+                return None
             except Exception as e:
                 logger.error(f"LLM API Error: {e}")
-                return {}
+                return None

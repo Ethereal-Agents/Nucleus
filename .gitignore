@@ -57,6 +57,7 @@ coverage.xml
 *.db-wal
 *.sqlite
 *.sqlite3
+database/
 
 # OS generated files
 .DS_Store
@@ -69,3 +70,9 @@ Thumbs.db
 .idea/
 swarm_memory.db*
 .pr_body.md
+
+# Environments
+.env
+.env.local
+.env.*
+!.env.example

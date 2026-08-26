@@ -1,19 +1,12 @@
-"""
-tests/store/test_db.py
-
-Phase 5a — Write-Path Tests: Storage Foundation (§2.2, §2.3, §7 Phase 1).
-
-Tests the SQLite schema, indexes, PRAGMAs, and bi-temporal query patterns described
-in implementation_plan.md §2.2 (Key Queries) and §10 (Correctness Invariants).
-"""
-
+import importlib.util
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from unittest import mock
 
 import pytest
 
 from swarm_memory.core.models import Fact, Run
-from swarm_memory.store.db import get_initialized_db
+from swarm_memory.store.db import get_db, get_initialized_db, init_db
 
 
 @pytest.fixture
@@ -142,7 +135,7 @@ def test_insert_and_retrieve_fact(db_conn):
     cursor.execute(
         """
         SELECT * FROM facts
-        WHERE scope = ? AND valid_to IS NULL AND superseded_by IS NULL
+        WHERE scope = ? AND valid_to IS NULL
     """,
         (fact.scope,),
     )
@@ -172,7 +165,6 @@ def test_all_five_indexes_created(db_conn):
     expected = {
         "idx_facts_current",
         "idx_facts_valid_range",
-        "idx_facts_superseded_by",
         "idx_facts_source_run",
         "idx_facts_type",
     }
@@ -245,14 +237,14 @@ def test_current_facts_query_excludes_superseded(db_mem):
 
     # Supersede old-fact
     db_mem.execute(
-        "UPDATE facts SET valid_to = ?, superseded_by = 'new-fact' WHERE id = 'old-fact'",
+        "UPDATE facts SET valid_to = ? WHERE id = 'old-fact'",
         (now.isoformat(),),
     )
     db_mem.commit()
 
     rows = db_mem.execute(
         """SELECT id FROM facts
-           WHERE scope = 'repo/auth' AND valid_to IS NULL AND superseded_by IS NULL""",
+           WHERE scope = 'repo/auth' AND valid_to IS NULL""",
     ).fetchall()
 
     ids = [r["id"] for r in rows]
@@ -275,7 +267,7 @@ def test_point_in_time_as_of_query(db_mem):
     # Insert new fact valid from t1 first (to satisfy FK)
     _insert_fact(db_mem, "fact-sessions", "auth uses sessions", "repo/auth", run_id, valid_from=t1)
     db_mem.execute(
-        "UPDATE facts SET valid_to = ?, superseded_by = 'fact-sessions' WHERE id = 'fact-jwt'",
+        "UPDATE facts SET valid_to = ? WHERE id = 'fact-jwt'",
         (t1.isoformat(),),
     )
     db_mem.commit()
@@ -310,7 +302,7 @@ def test_point_in_time_as_of_query(db_mem):
 def test_supersession_update_query(db_mem):
     """
     §2.3 'WRITE: Supersede an old fact' — verifies that UPDATE sets valid_to and
-    superseded_by, and that the old fact row is preserved (never deleted — §10.1).
+    and that the old fact row is preserved (never deleted — §10.1).
     """
     run_id = _insert_run(db_mem)
     past = datetime.now(UTC) - timedelta(hours=1)
@@ -321,7 +313,7 @@ def test_supersession_update_query(db_mem):
 
     # Apply supersession UPDATE (§2.3 pattern)
     db_mem.execute(
-        "UPDATE facts SET valid_to = ?, superseded_by = 'new' WHERE id = 'old'",
+        "UPDATE facts SET valid_to = ? WHERE id = 'old'",
         (now.isoformat(),),
     )
     db_mem.commit()
@@ -332,10 +324,102 @@ def test_supersession_update_query(db_mem):
     assert old_row is not None, "Superseded fact must NOT be deleted"
     # valid_to must be set
     assert old_row["valid_to"] is not None, "valid_to must be set on superseded fact"
-    # superseded_by FK must point to new fact
-    assert old_row["superseded_by"] == "new", "superseded_by must point to the replacement fact"
 
     # New fact must still be current
     new_row = db_mem.execute("SELECT * FROM facts WHERE id = 'new'").fetchone()
     assert new_row["valid_to"] is None
-    assert new_row["superseded_by"] is None
+
+
+def test_get_db_creates_file(tmp_path):
+    db_file = tmp_path / "new_db.sqlite"
+    assert not db_file.exists()
+    conn, vec = get_db(str(db_file))
+    conn.close()
+    assert db_file.exists()
+
+
+def test_get_db_returns_vec_loaded_flag():
+    conn, vec = get_db(":memory:")
+    assert isinstance(vec, bool)
+    conn.close()
+
+
+@mock.patch.dict("sys.modules", {"sqlite_vec": None})
+def test_get_db_vec_not_available(capsys):
+    conn, vec_loaded = get_db(":memory:")
+    assert vec_loaded is False
+    captured = capsys.readouterr()
+    assert "Warning: sqlite_vec not found" in captured.out
+    conn.close()
+
+
+def test_init_db_idempotent(db_conn):
+    # init_db is already called when db_conn is created,
+    # calling it again should not raise any exceptions.
+    init_db(db_conn, vec_loaded=False, embed_dim=768)
+
+
+def test_arm_column_migration(tmp_path):
+    db_file = tmp_path / "migration.db"
+    conn = sqlite3.connect(str(db_file))
+    conn.execute("""
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            started_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
+    init_db(conn, vec_loaded=False, embed_dim=768)
+
+    cursor = conn.execute("PRAGMA table_info(runs)")
+    columns = {row[1] for row in cursor.fetchall()}
+    assert "arm" in columns
+    conn.close()
+
+
+def test_pragmas_applied(tmp_path):
+    db_file = tmp_path / "pragma.db"
+    conn, _ = get_db(str(db_file))
+    cursor = conn.cursor()
+
+    wal = cursor.execute("PRAGMA journal_mode").fetchone()[0]
+    assert wal == "wal"
+
+    sync = cursor.execute("PRAGMA synchronous").fetchone()[0]
+    assert sync == 1  # NORMAL is 1
+
+    fk = cursor.execute("PRAGMA foreign_keys").fetchone()[0]
+    assert fk == 1
+
+    cache_size = cursor.execute("PRAGMA cache_size").fetchone()[0]
+    assert cache_size == -64000
+
+    busy_timeout = cursor.execute("PRAGMA busy_timeout").fetchone()[0]
+    assert busy_timeout == 5000
+    conn.close()
+
+
+def test_trajectories_table_schema(db_conn):
+    cursor = db_conn.execute("PRAGMA table_info(trajectories)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    assert {"id", "content", "run_id", "created_at"} <= columns
+
+
+def test_trajectories_vec_table_schema(db_conn):
+    if importlib.util.find_spec("sqlite_vec") is None:
+        pytest.skip("sqlite_vec not installed")
+
+    cursor = db_conn.execute("PRAGMA table_info(trajectories_vec)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    assert {"trajectory_id", "embedding"} <= columns
+
+
+def test_foreign_key_cascade_trajectories(db_mem):
+    with pytest.raises(sqlite3.IntegrityError):
+        db_mem.execute(
+            "INSERT INTO trajectories (id, content, run_id) VALUES (?, ?, ?)",
+            ("traj-1", "some content", "non-existent-run"),
+        )

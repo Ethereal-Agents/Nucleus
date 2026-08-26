@@ -5,12 +5,16 @@ requires-python = ">=3.11"
 dependencies = [
     "fastmcp>=2.0",
     "sqlite-vec>=0.1.6",
+    # Legacy dependencies for PyTorch embeddings (can be removed later)
     "sentence-transformers>=3.0",
+    "einops>=0.8",
+    # New fast ONNX Runtime embeddings
+    "fastembed>=0.2.7",
     "numpy>=1.26",
     "pydantic>=2.0",
     "uuid7>=0.1.0",
     "litellm>=1.91.0",
-    "einops>=0.8",
+    "python-dotenv>=1.2.2",
 ]
 
 [project.optional-dependencies]

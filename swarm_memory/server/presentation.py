@@ -44,5 +44,5 @@ def format_results_for_agent(results: list[SearchResult], scope: str) -> str:
         lines.append(f"→ id: {fact.id}  |  known since: {known_since}")
         lines.append("")
 
-    lines.append('If any fact above is outdated, call: memory_invalidate(fact_id, reason="...")')
+    # lines.append('If any fact above is outdated, call: memory_invalidate(fact_id, reason="...")')
     return "\n".join(lines)

@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from swarm_memory.core.models import FactType
 from swarm_memory.ingestion.extraction import parse_extraction_output
 
@@ -55,10 +57,12 @@ def test_parse_trailing_comma():
     assert drafts[0].scope == "global"
 
 
-def test_parse_garbage_returns_empty():
+def test_parse_garbage_raises():
     raw = "I'm sorry, I cannot extract facts right now."
-    drafts = parse_extraction_output(raw, run_id="run-4")
-    assert len(drafts) == 0
+    import pytest
+
+    with pytest.raises(ValueError):
+        parse_extraction_output(raw, run_id="run-4")
 
 
 def test_parse_empty_string():
@@ -129,5 +133,49 @@ def test_parse_not_an_array():
             "scope": "wrong",
         }
     )
-    drafts = parse_extraction_output(raw, run_id="run-10")
-    assert len(drafts) == 0
+    with pytest.raises(ValueError):
+        parse_extraction_output(raw, run_id="run-10")
+
+
+def test_parse_null_json_input():
+    # EXT-01: None input -> ValueError or returns []
+    with pytest.raises((ValueError, TypeError, AttributeError)):
+        parse_extraction_output(None, run_id="run-null")
+
+
+def test_parse_deeply_nested_json():
+    # EXT-02: JSON with extra nested keys -> only relevant fields extracted
+    raw = json.dumps(
+        [
+            {
+                "content": "Nested fact",
+                "scope": "nested",
+                "fact_type": "insight",
+                "extra_key": {"ignored": True},
+            }
+        ]
+    )
+    drafts = parse_extraction_output(raw, run_id="run-nested")
+    assert len(drafts) == 1
+    assert drafts[0].content == "Nested fact"
+    assert drafts[0].scope == "nested"
+    assert drafts[0].fact_type == FactType.INSIGHT
+    assert not hasattr(drafts[0], "extra_key")
+
+
+def test_parse_unicode_content():
+    # EXT-03: Facts with Unicode/emoji content are preserved
+    raw = json.dumps([{"content": "Fact with emoji 🚀 and unicode 漢字", "scope": "emoji/scope"}])
+    drafts = parse_extraction_output(raw, run_id="run-unicode")
+    assert len(drafts) == 1
+    assert drafts[0].content == "Fact with emoji 🚀 and unicode 漢字"
+
+
+def test_parse_very_large_array():
+    # EXT-04: 100+ fact drafts parsed correctly
+    items = [{"content": f"Fact {i}", "scope": "large"} for i in range(150)]
+    raw = json.dumps(items)
+    drafts = parse_extraction_output(raw, run_id="run-large")
+    assert len(drafts) == 150
+    assert drafts[0].content == "Fact 0"
+    assert drafts[149].content == "Fact 149"

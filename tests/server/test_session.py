@@ -47,3 +47,26 @@ class TestSessionDedup:
         # Mark more facts
         session_manager.mark_seen(run_id, ["fact-2", "fact-3"])
         assert session_manager.get_seen_ids(run_id) == {"fact-1", "fact-2", "fact-3"}
+
+    def test_mark_seen_empty_set(self, session_manager):
+        run_id = "test-empty"
+        session_manager.mark_seen(run_id, set())
+        assert session_manager.get_seen_ids(run_id) == set()
+        assert run_id not in session_manager._session_seen
+
+    def test_get_seen_ids_unknown_run(self, session_manager):
+        assert session_manager.get_seen_ids("unknown-run-id") == set()
+
+    def test_mark_seen_updates_timestamp(self, session_manager):
+        run_id = "test-time"
+        session_manager.mark_seen(run_id, {"fact-1"})
+        t1 = session_manager._session_seen[run_id][1]
+
+        import time
+
+        time.sleep(0.01)
+
+        session_manager.mark_seen(run_id, {"fact-2"})
+        t2 = session_manager._session_seen[run_id][1]
+
+        assert t2 > t1

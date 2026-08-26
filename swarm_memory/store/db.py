@@ -1,3 +1,4 @@
+import contextlib
 import sqlite3
 
 from swarm_memory.core.config import DB_PATH
@@ -16,7 +17,8 @@ CREATE TABLE IF NOT EXISTS runs (
     total_cost_usd  REAL DEFAULT 0.0,
     started_at      TEXT NOT NULL,
     finished_at     TEXT,
-    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    arm             TEXT DEFAULT 'arm1'
 );
 
 CREATE TABLE IF NOT EXISTS facts (
@@ -28,7 +30,6 @@ CREATE TABLE IF NOT EXISTS facts (
 
     valid_from      TEXT NOT NULL,
     valid_to        TEXT,
-    superseded_by   TEXT,
 
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     source_run_id   TEXT NOT NULL,
@@ -36,28 +37,47 @@ CREATE TABLE IF NOT EXISTS facts (
     extraction_method TEXT DEFAULT 'llm_summary',
     content_hash    TEXT,
 
-    FOREIGN KEY (superseded_by) REFERENCES facts(id),
     FOREIGN KEY (source_run_id) REFERENCES runs(id),
     UNIQUE(content_hash)
+);
+
+CREATE TABLE IF NOT EXISTS fact_lineage (
+    predecessor_id  TEXT NOT NULL,
+    successor_id    TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (predecessor_id, successor_id),
+    FOREIGN KEY (predecessor_id) REFERENCES facts(id),
+    FOREIGN KEY (successor_id) REFERENCES facts(id)
 );
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_facts_current
     ON facts(scope, valid_to)
-    WHERE valid_to IS NULL AND superseded_by IS NULL;
+    WHERE valid_to IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_facts_valid_range
     ON facts(scope, valid_from, valid_to);
 
-CREATE INDEX IF NOT EXISTS idx_facts_superseded_by
-    ON facts(superseded_by)
-    WHERE superseded_by IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_lineage_pred
+    ON fact_lineage(predecessor_id);
+
+CREATE INDEX IF NOT EXISTS idx_lineage_succ
+    ON fact_lineage(successor_id);
 
 CREATE INDEX IF NOT EXISTS idx_facts_source_run
     ON facts(source_run_id);
 
 CREATE INDEX IF NOT EXISTS idx_facts_type
     ON facts(fact_type, scope);
+
+-- Trajectories tables for Arm 2 naive RAG
+CREATE TABLE IF NOT EXISTS trajectories (
+    id              TEXT PRIMARY KEY,
+    content         TEXT NOT NULL,
+    run_id          TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (run_id) REFERENCES runs(id)
+);
 
 -- Full-text search (FTS5)
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
@@ -73,6 +93,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
 _VEC_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_vec USING vec0(
     fact_id TEXT PRIMARY KEY,
+    embedding float[{dim}]
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS trajectories_vec USING vec0(
+    trajectory_id TEXT PRIMARY KEY,
     embedding float[{dim}]
 );
 """
@@ -114,6 +139,28 @@ def init_db(conn: sqlite3.Connection, vec_loaded: bool = False, embed_dim: int =
     conn.executescript(_SCHEMA)
     if vec_loaded:
         conn.executescript(_VEC_SCHEMA.format(dim=embed_dim))
+
+    # Migration for adding `arm` to existing databases
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE runs ADD COLUMN arm TEXT DEFAULT 'arm1'")
+
+    # Migration for creating trajectories tables in existing databases
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS trajectories (
+            id              TEXT PRIMARY KEY,
+            content         TEXT NOT NULL,
+            run_id          TEXT NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            FOREIGN KEY (run_id) REFERENCES runs(id)
+        );
+    """)
+    if vec_loaded:
+        conn.executescript(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS trajectories_vec USING vec0(
+                trajectory_id TEXT PRIMARY KEY,
+                embedding float[{embed_dim}]
+            );
+        """)
 
 
 def get_initialized_db(path: str | None = None) -> sqlite3.Connection:

@@ -52,7 +52,19 @@ class TestFormatResultsForAgent:
         assert "0.8" not in output
         assert "relevance" not in output.lower()
 
-    def test_invalidate_reminder_at_end(self):
-        results = [self._make_result("A", FactType.INSIGHT, "test")]
+    def test_format_multiple_fact_types(self):
+        results = [
+            self._make_result("A", FactType.INSIGHT, "insight text"),
+            self._make_result("B", FactType.GOTCHA, "gotcha text"),
+            self._make_result("C", FactType.CONVENTION, "convention text"),
+        ]
         output = format_results_for_agent(results, scope="myrepo")
-        assert "memory_invalidate" in output
+        assert "insight text" in output
+        assert "gotcha text" in output
+        assert "convention text" in output
+        assert "⚠" in output
+
+    def test_format_scope_none(self):
+        results = [self._make_result("A", FactType.INSIGHT, "test fact")]
+        output = format_results_for_agent(results, scope=None)
+        assert "for None" in output
